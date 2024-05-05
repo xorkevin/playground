@@ -1,4 +1,4 @@
-.PHONY: all setup build dev lint format clean test devserve
+.PHONY: all setup build dev lint format clean test devserve deploycopy
 
 all: build
 
@@ -24,4 +24,8 @@ test:
 	yarn run test
 
 devserve:
-	yarn serve --config fsserve.json --base ./dist
+	fsserve serve --config fsserve.json --base ./dist
+
+deploycopy: build
+	cp -r dist/* ../playground-deploy
+	cp dist/index.html ../playground-deploy/404.html
