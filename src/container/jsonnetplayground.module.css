@@ -1,10 +1,10 @@
 @layer app {
   .files {
-    width: 60%;
+    width: 50%;
   }
 
   .output {
-    width: 40%;
+    width: 50%;
   }
 
   .close-icon {
