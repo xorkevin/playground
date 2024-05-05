@@ -19,79 +19,11 @@ import {
   useForm,
 } from '@xorkevin/nuke/component/form';
 import {TextClasses} from '@xorkevin/nuke/component/text';
-import {type Result, isArray, isNil, isResErr} from '@xorkevin/nuke/computil';
+import {type Result, isNil, isResErr} from '@xorkevin/nuke/computil';
 import {useRoute, useRouter} from '@xorkevin/nuke/router';
 
 import styles from './jsonnetplayground.module.css';
-
-const base64Chars = /\+|\/|=/g;
-const textEncoder = new TextEncoder();
-
-const compress = async (data: string): Promise<Result<string, Error>> => {
-  const stream = new Blob([textEncoder.encode(data)])
-    .stream()
-    .pipeThrough(new CompressionStream('gzip'));
-  const blob = await new Response(stream).blob();
-
-  const u = await new Promise<Result<string, Error>>((resolve) => {
-    const fileReader = new FileReader();
-    fileReader.onerror = () => {
-      resolve({err: fileReader.error ?? new Error('File reader error')});
-    };
-    fileReader.onload = () => {
-      if (typeof fileReader.result !== 'string') {
-        resolve({err: new Error('File reader result is not a string')});
-        return;
-      }
-      const idx = fileReader.result.indexOf(',');
-      if (idx < 0) {
-        resolve({err: new Error('File reader result malformed')});
-        return;
-      }
-      const u = fileReader.result
-        .replaceAll(base64Chars, (s) => {
-          switch (s) {
-            case '+':
-              return '-';
-            case '/':
-              return '_';
-            default:
-              return '';
-          }
-        })
-        .slice(idx + 1);
-      resolve({value: u});
-    };
-    fileReader.readAsDataURL(blob);
-  });
-  return u;
-};
-
-const base64URLChars = /-|_/g;
-
-const decompress = async (data: string): Promise<Result<string, Error>> => {
-  const u = data.replaceAll(base64URLChars, (s) => {
-    switch (s) {
-      case '-':
-        return '+';
-      case '_':
-        return '/';
-      default:
-        return '';
-    }
-  });
-  const res = await fetch(`data:application/octet-stream;base64,${u}`);
-
-  const stream =
-    res.body?.pipeThrough(new DecompressionStream('gzip')) ??
-    new Blob(['[]']).stream();
-  try {
-    const u = await new Response(stream).text();
-    return {value: u};
-  } catch (err) {
-    return {err: new Error('Failed decoding data', {cause: err})};
-  }
-};
+import {bufToStrArray, compress, decompress, strArrToBuf} from '@/compress.js';
 
 const Header = ({share}: {share: () => void}) => (
   <Box padded={BoxPadded.TB} paddedSmall>
@@ -178,36 +110,17 @@ type FilesState = {
   [key: string]: FormValue;
 };
 
-const filesStateToArray = (s: FilesState): string[] => {
-  const mainData = s[`${MAIN_FILE_ID}:data`] ?? '';
-  const arr = [typeof mainData === 'string' ? mainData : ''];
-  for (const id of s.files) {
-    const name = s[`${id}:name`] ?? '';
-    const data = s[`${id}:data`] ?? '';
-    arr.push(typeof name === 'string' ? name : '');
-    arr.push(typeof data === 'string' ? data : '');
-  }
-  return arr;
+const getStr = (s: unknown): string => (typeof s === 'string' ? s : '');
+
+const filesStateToBuf = (s: FilesState): ArrayBuffer => {
+  const arr = [getStr(s[`${MAIN_FILE_ID}:data`])].concat(
+    s.files.flatMap((id) => [getStr(s[`${id}:name`]), getStr(s[`${id}:data`])]),
+  );
+  return strArrToBuf(arr);
 };
 
-const parseJSONStringArr = (s: string): Result<string[], Error> => {
-  try {
-    const o = JSON.parse(s) as unknown;
-    if (!isArray(o)) {
-      return {err: new Error('File state is malformed')};
-    }
-    const arr = o as unknown[];
-    if (arr.every((v): v is string => typeof v === 'string')) {
-      return {value: arr};
-    }
-    return {err: new Error('File state is malformed')};
-  } catch (err) {
-    return {err: new Error('Failed parsing file state from url', {cause: err})};
-  }
-};
-
-const dataStringToFilesState = (s: string): Result<FilesState, Error> => {
-  const arr = parseJSONStringArr(s);
+const bufToFilesState = (buf: ArrayBuffer): Result<FilesState, Error> => {
+  const arr = bufToStrArray(buf);
   if (isResErr(arr)) {
     return arr;
   }
@@ -309,9 +222,9 @@ const JsonnetPlayground: FC = () => {
   const routeNav = route.navigate;
   const share = useCallback(() => {
     void (async () => {
-      const code = await compress(JSON.stringify(filesStateToArray(formState)));
+      const code = await compress(filesStateToBuf(formState));
       if (isResErr(code)) {
-        console.error('Failed compressing data', code.err);
+        console.error('Failed compressing url code', code.err);
         return;
       }
       if (unmounted.current?.aborted === true) {
@@ -347,16 +260,16 @@ const JsonnetPlayground: FC = () => {
       return;
     }
     void (async () => {
-      const data = await decompress(code);
-      if (isResErr(data)) {
-        console.error('Failed decompressing data', data.err);
+      const buf = await decompress(code);
+      if (isResErr(buf)) {
+        console.error('Failed decompressing url code', buf.err);
         once.current = true;
         return;
       }
       if (controller.signal.aborted) {
         return;
       }
-      const s = dataStringToFilesState(data.value);
+      const s = bufToFilesState(buf.value);
       if (isResErr(s)) {
         console.error('Failed parsing url code', s.err);
         once.current = true;
