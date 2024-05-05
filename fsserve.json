@@ -1,0 +1,13 @@
+{
+  "routes": [
+    {
+      "prefix": "/static/",
+      "dir": true,
+      "path": "static"
+    },
+    {
+      "prefix": "/",
+      "path": "index.html"
+    }
+  ]
+}

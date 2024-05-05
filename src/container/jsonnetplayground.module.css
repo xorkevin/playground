@@ -1,0 +1,14 @@
+@layer app {
+  .files {
+    width: 60%;
+  }
+
+  .output {
+    width: 40%;
+  }
+
+  .close-icon {
+    display: flex;
+    align-items: center;
+  }
+}

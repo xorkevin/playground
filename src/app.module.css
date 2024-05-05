@@ -1,0 +1,5 @@
+@layer app {
+  .mainapp {
+    min-height: 100vh;
+  }
+}
