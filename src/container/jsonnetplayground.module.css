@@ -5,6 +5,13 @@
 
   .output {
     width: 50%;
+
+    & > pre {
+      border: 1px solid var(--nuke-color-bg-3);
+      padding: 1rem;
+      border-radius: 0.5rem;
+      text-wrap: wrap;
+    }
   }
 
   .close-icon {

@@ -17,7 +17,6 @@ import (
 	"github.com/google/go-jsonnet/ast"
 	"github.com/mitchellh/mapstructure"
 	"gopkg.in/yaml.v3"
-	"xorkevin.dev/kerrors"
 	"xorkevin.dev/playground/pkg/kjson"
 )
 
@@ -47,6 +46,132 @@ func New(fsys map[string]string) *Engine {
 	}
 }
 
+var nativeFuncs = []NativeFunc{
+	{
+		Name: "log",
+		Fn: func(args []any) (any, error) {
+			b, err := kjson.Marshal(args)
+			if err != nil {
+				return nil, fmt.Errorf("Failed to marshal logs: %w", err)
+			}
+			var buf bytes.Buffer
+			if err := json.Indent(&buf, []byte(b), "", "  "); err != nil {
+				return nil, fmt.Errorf("Error formatting logs: %w", err)
+			}
+			if _, err := buf.WriteTo(os.Stderr); err != nil {
+				return nil, fmt.Errorf("Failed writing logs: %w", err)
+			}
+			return true, nil
+		},
+		Params: []string{"str", "rest"},
+	},
+	{
+		Name: "jsonMarshal",
+		Fn: func(args []any) (any, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("%w: jsonMarshal needs 1 argument", ErrInvalidArgs)
+			}
+			b, err := kjson.Marshal(args[0])
+			if err != nil {
+				return nil, fmt.Errorf("Failed to marshal json: %w", err)
+			}
+			return string(b), nil
+		},
+		Params: []string{"v"},
+	},
+	{
+		Name: "jsonUnmarshal",
+		Fn: func(args []any) (any, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("%w: jsonUnmarshal needs 1 argument", ErrInvalidArgs)
+			}
+			a, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: JSON must be a string", ErrInvalidArgs)
+			}
+			// jsonnet treats all numbers as float64, therefore no need to decode
+			// as number. It also does not handle [json.Number].
+			var v any
+			if err := json.Unmarshal([]byte(a), &v); err != nil {
+				return nil, fmt.Errorf("Failed to unmarshal json: %w", err)
+			}
+			return v, nil
+		},
+		Params: []string{"v"},
+	},
+	{
+		Name: "jsonMergePatch",
+		Fn: func(args []any) (any, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("%w: jsonMergePatch needs 2 arguments", ErrInvalidArgs)
+			}
+			return kjson.MergePatch(args[0], args[1]), nil
+		},
+		Params: []string{"a", "b"},
+	},
+	{
+		Name: "yamlMarshal",
+		Fn: func(args []any) (any, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("%w: yamlMarshal needs 1 argument", ErrInvalidArgs)
+			}
+			b, err := yaml.Marshal(args[0])
+			if err != nil {
+				return nil, fmt.Errorf("Failed to marshal yaml: %w", err)
+			}
+			return string(b), nil
+		},
+		Params: []string{"v"},
+	},
+	{
+		Name: "yamlUnmarshal",
+		Fn: func(args []any) (any, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("%w: yamlUnmarshal needs 1 argument", ErrInvalidArgs)
+			}
+			a, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: YAML must be a string", ErrInvalidArgs)
+			}
+			var v any
+			if err := yaml.Unmarshal([]byte(a), &v); err != nil {
+				return nil, fmt.Errorf("Failed to unmarshal yaml: %w", err)
+			}
+			return v, nil
+		},
+		Params: []string{"v"},
+	},
+	{
+		Name: "pathJoin",
+		Fn: func(args []any) (any, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("%w: pathJoin needs 1 argument", ErrInvalidArgs)
+			}
+			var segments []string
+			if err := mapstructure.Decode(args[0], &segments); err != nil {
+				return nil, fmt.Errorf("%w: Path segments must be an array of strings: %w", ErrInvalidArgs, err)
+			}
+			return path.Join(segments...), nil
+		},
+		Params: []string{"v"},
+	},
+	{
+		Name: "sha256hex",
+		Fn: func(args []any) (any, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("%w: sha256hex needs 1 argument", ErrInvalidArgs)
+			}
+			data, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: sha256hex must have string argument", ErrInvalidArgs)
+			}
+			h := sha256.Sum256([]byte(data))
+			return hex.EncodeToString(h[:]), nil
+		},
+		Params: []string{"v"},
+	},
+}
+
 func (e *Engine) buildVM(strout bool, stderr io.Writer) *jsonnet.VM {
 	if stderr == nil {
 		stderr = io.Discard
@@ -59,113 +184,7 @@ func (e *Engine) buildVM(strout bool, stderr io.Writer) *jsonnet.VM {
 	var stdlib strings.Builder
 	stdlib.WriteString("{\n")
 
-	for _, v := range []NativeFunc{
-		{
-			Name: "jsonMarshal",
-			Fn: func(args []any) (any, error) {
-				if len(args) != 1 {
-					return nil, fmt.Errorf("%w: jsonMarshal needs 1 argument", ErrInvalidArgs)
-				}
-				b, err := kjson.Marshal(args[0])
-				if err != nil {
-					return nil, fmt.Errorf("Failed to marshal json: %w", err)
-				}
-				return string(b), nil
-			},
-			Params: []string{"v"},
-		},
-		{
-			Name: "jsonUnmarshal",
-			Fn: func(args []any) (any, error) {
-				if len(args) != 1 {
-					return nil, fmt.Errorf("%w: jsonUnmarshal needs 1 argument", ErrInvalidArgs)
-				}
-				a, ok := args[0].(string)
-				if !ok {
-					return nil, fmt.Errorf("%w: JSON must be a string", ErrInvalidArgs)
-				}
-				// jsonnet treats all numbers as float64, therefore no need to decode
-				// as number. It also does not handle [json.Number].
-				var v any
-				if err := json.Unmarshal([]byte(a), &v); err != nil {
-					return nil, fmt.Errorf("Failed to unmarshal json: %w", err)
-				}
-				return v, nil
-			},
-			Params: []string{"v"},
-		},
-		{
-			Name: "jsonMergePatch",
-			Fn: func(args []any) (any, error) {
-				if len(args) != 2 {
-					return nil, fmt.Errorf("%w: jsonMergePatch needs 2 arguments", ErrInvalidArgs)
-				}
-				return kjson.MergePatch(args[0], args[1]), nil
-			},
-			Params: []string{"a", "b"},
-		},
-		{
-			Name: "yamlMarshal",
-			Fn: func(args []any) (any, error) {
-				if len(args) != 1 {
-					return nil, fmt.Errorf("%w: yamlMarshal needs 1 argument", ErrInvalidArgs)
-				}
-				b, err := yaml.Marshal(args[0])
-				if err != nil {
-					return nil, fmt.Errorf("Failed to marshal yaml: %w", err)
-				}
-				return string(b), nil
-			},
-			Params: []string{"v"},
-		},
-		{
-			Name: "yamlUnmarshal",
-			Fn: func(args []any) (any, error) {
-				if len(args) != 1 {
-					return nil, fmt.Errorf("%w: yamlUnmarshal needs 1 argument", ErrInvalidArgs)
-				}
-				a, ok := args[0].(string)
-				if !ok {
-					return nil, fmt.Errorf("%w: YAML must be a string", ErrInvalidArgs)
-				}
-				var v any
-				if err := yaml.Unmarshal([]byte(a), &v); err != nil {
-					return nil, fmt.Errorf("Failed to unmarshal yaml: %w", err)
-				}
-				return v, nil
-			},
-			Params: []string{"v"},
-		},
-		{
-			Name: "pathJoin",
-			Fn: func(args []any) (any, error) {
-				if len(args) != 1 {
-					return nil, fmt.Errorf("%w: pathJoin needs 1 argument", ErrInvalidArgs)
-				}
-				var segments []string
-				if err := mapstructure.Decode(args[0], &segments); err != nil {
-					return nil, fmt.Errorf("%w: Path segments must be an array of strings: %w", ErrInvalidArgs, err)
-				}
-				return path.Join(segments...), nil
-			},
-			Params: []string{"v"},
-		},
-		{
-			Name: "sha256hex",
-			Fn: func(args []any) (any, error) {
-				if len(args) != 1 {
-					return nil, fmt.Errorf("%w: sha256hex needs 1 argument", ErrInvalidArgs)
-				}
-				data, ok := args[0].(string)
-				if !ok {
-					return nil, fmt.Errorf("%w: sha256hex must have string argument", ErrInvalidArgs)
-				}
-				h := sha256.Sum256([]byte(data))
-				return hex.EncodeToString(h[:]), nil
-			},
-			Params: []string{"v"},
-		},
-	} {
+	for _, v := range nativeFuncs {
 		paramstr := ""
 		var params ast.Identifiers
 		if len(v.Params) > 0 {
@@ -199,7 +218,7 @@ func (e *Engine) Exec(name string, strout bool, stderr io.Writer) (string, error
 	vm := e.buildVM(strout, stderr)
 	b, err := vm.EvaluateFile(name)
 	if err != nil {
-		return "", kerrors.WithMsg(err, "Failed to execute jsonnet")
+		return "", fmt.Errorf("Failed to execute jsonnet: %w", err)
 	}
 	return b, nil
 }

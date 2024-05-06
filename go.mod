@@ -6,7 +6,6 @@ require (
 	github.com/google/go-jsonnet v0.20.0
 	github.com/mitchellh/mapstructure v1.5.0
 	gopkg.in/yaml.v3 v3.0.1
-	xorkevin.dev/kerrors v0.1.5
 )
 
 require (

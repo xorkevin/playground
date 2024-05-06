@@ -1,4 +1,11 @@
-import {type FC, useCallback, useEffect, useRef, useState} from 'react';
+import {
+  type FC,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import jsonnetEnginePath from '@wasm/jsonnet.engine.wasm';
 
 import {
@@ -25,6 +32,7 @@ import {
   isNil,
   isResErr,
   isSignalAborted,
+  sleep,
 } from '@xorkevin/nuke/computil';
 import {useRoute, useRouter} from '@xorkevin/nuke/router';
 
@@ -49,11 +57,18 @@ const Header = ({share}: {share: () => void}) => (
         <Button type="reset">Reset</Button>
         <Button onClick={share}>Share</Button>
       </ButtonGroup>
+      <Field>
+        <Flex alignItems={FlexAlignItems.Center}>
+          <Input type="checkbox" name="strout" toggleSwitch />
+          <Label>String Output</Label>
+        </Flex>
+      </Field>
     </Flex>
   </Box>
 );
 
 const MAIN_FILE_ID = 'MAIN';
+const MAIN_FILE_NAME = 'main.jsonnet';
 
 const CloseIcon = () => (
   <svg
@@ -85,7 +100,7 @@ const PlaygroundFile = ({id, rm}: {id: string; rm: (id: string) => void}) => {
           <Label>Filename</Label>
           <Input
             name={`${id}:name`}
-            value={isMain ? 'main.jsonnet' : undefined}
+            value={isMain ? MAIN_FILE_NAME : undefined}
             readOnly={isMain}
           />
           {!isMain && (
@@ -101,7 +116,7 @@ const PlaygroundFile = ({id, rm}: {id: string; rm: (id: string) => void}) => {
           <Textarea
             name={`${id}:data`}
             resize={TextareaResize.Vertical}
-            rows={8}
+            rows={16}
             monospace
             fullWidth
           />
@@ -121,13 +136,14 @@ const Footer = ({add}: {add: () => void}) => (
 
 type FilesState = {
   files: string[];
+  strout: boolean;
   [key: string]: FormValue;
 };
 
 const getStr = (s: unknown): string => (typeof s === 'string' ? s : '');
 
 const filesStateToBuf = (s: FilesState): ArrayBuffer => {
-  const arr = [getStr(s[`${MAIN_FILE_ID}:data`])].concat(
+  const arr = [s.strout ? 't' : 'f', getStr(s[`${MAIN_FILE_ID}:data`])].concat(
     s.files.flatMap((id) => [getStr(s[`${id}:name`]), getStr(s[`${id}:data`])]),
   );
   return strArrToBuf(arr);
@@ -138,31 +154,101 @@ const bufToFilesState = (buf: ArrayBuffer): Result<FilesState, Error> => {
   if (isResErr(arr)) {
     return arr;
   }
-  if (arr.value.length % 2 !== 1) {
+  if (arr.value.length < 2) {
     return {err: new Error('File state is malformed')};
   }
   const files: string[] = [];
   const state: FilesState = {
     files,
-    [`${MAIN_FILE_ID}:data`]: arr.value[0],
+    strout: arr.value[0] === 't',
+    [`${MAIN_FILE_ID}:data`]: arr.value[1],
   };
-  for (let i = 2; i < arr.value.length; i += 2) {
-    const name = arr.value[i - 1];
-    const data = arr.value[i];
+  const rest = arr.value.slice(2);
+  if (rest.length % 2 !== 0) {
+    return {err: new Error('File state is malformed')};
+  }
+  for (let i = 1; i < rest.length; i += 2) {
+    const name = rest[i - 1];
+    const data = rest[i];
     const id = crypto.randomUUID() as string;
     files.push(id);
-    state[`${id}:name`] = name;
-    state[`${id}:data`] = data;
+    state[`${id}:name`] = name ?? '';
+    state[`${id}:data`] = data ?? '';
   }
   return {value: state};
 };
 
-const initFilesState = (): FilesState => {
+type JsonnetConfig = {
+  files: {[key: string]: string};
+  strout: boolean;
+};
+
+const filesStateToWasmFiles = (s: FilesState): JsonnetConfig => {
+  const files: [string, string][] = [
+    [MAIN_FILE_NAME, getStr(s[`${MAIN_FILE_ID}:data`])],
+  ];
+  s.files.forEach((id) =>
+    files.push([getStr(s[`${id}:name`]), getStr(s[`${id}:data`])]),
+  );
   return {
-    files: [],
-    [`${MAIN_FILE_ID}:data`]: '',
+    files: Object.fromEntries<string>(files),
+    strout: s.strout,
   };
 };
+
+const initFilesState = (): FilesState => {
+  const id = crypto.randomUUID() as string;
+  return {
+    files: [id],
+    strout: false,
+    [`${MAIN_FILE_ID}:data`]: `local nstd = import 'native:std';
+
+local world = import 'dir/world.libsonnet';
+
+assert nstd.log(
+  'These functions are available in the additional native std lib',
+  std.map((function(i) i.key), std.objectKeysValuesAll(nstd)),
+);
+
+assert nstd.log('This is a secret', world.secret);
+
+local Person(name='World') = {
+  name: name,
+  welcome: 'Hello ' + name + '!',
+};
+
+local person = Person('Kevin');
+
+{
+  people: [Person(), person],
+  secret: world.secrethash,
+  obj: nstd.jsonMergePatch(
+    {
+      foo: {
+        bar: "baz",
+      },
+      hello: "world",
+    },
+    {
+      foo: {
+        bar: person.name,
+      },
+    },
+  ),
+}
+`,
+    [`${id}:name`]: 'dir/world.libsonnet',
+    [`${id}:data`]: `local nstd = import 'native:std';
+
+{
+  secret: 'top secret',
+  secrethash: nstd.sha256hex(self.secret),
+}
+`,
+  };
+};
+
+const emptyOutput = () => ({stdout: '', stderr: ''});
 
 const JsonnetPlayground: FC = () => {
   const form = useForm(initFilesState);
@@ -174,7 +260,7 @@ const JsonnetPlayground: FC = () => {
       let copy = undefined;
       const s = new Set<string>(formState.files);
       for (const k of Object.keys(v)) {
-        if (k === 'files') {
+        if (k === 'files' || k === 'strout') {
           continue;
         }
         const [name] = k.split(':', 1) as [string];
@@ -260,6 +346,10 @@ const JsonnetPlayground: FC = () => {
     })();
   }, [formState, unmounted, routeNav]);
 
+  const handleReset = useCallback(() => {
+    routeNav('', true);
+  }, [routeNav]);
+
   const router = useRouter();
   const routerURL = router.url;
   useEffect(() => {
@@ -328,31 +418,49 @@ const JsonnetPlayground: FC = () => {
       setJsonnetMod(mod.value);
     })();
     return () => {
-      return controller.abort();
+      controller.abort();
     };
   }, [setJsonnetMod]);
 
+  const deferredFormState = useDeferredValue(formState);
+  const [output, setOutput] = useState(emptyOutput);
+
   useEffect(() => {
     if (isNil(jsonnetMod)) {
+      setOutput(emptyOutput);
       return;
     }
 
     const controller = new AbortController();
     void (async () => {
-      const res = await runMod(jsonnetMod, {});
-      if (isResErr(res)) {
-        console.error('Failed running wasm module', res.err);
+      setOutput((v) => ({stdout: v.stdout, stderr: 'Loading...'}));
+      await sleep(250, {signal: controller.signal});
+      if (isSignalAborted(controller.signal)) {
         return;
       }
+      const res = await runMod(jsonnetMod, {
+        stdin: JSON.stringify(filesStateToWasmFiles(deferredFormState)),
+      });
+      if (isSignalAborted(controller.signal)) {
+        return;
+      }
+      if (isResErr(res)) {
+        setOutput({
+          stdout: '',
+          stderr: `Failed running wasm module: ${res.err.toString()}`,
+        });
+        return;
+      }
+      setOutput(res.value);
     })();
     return () => {
-      return controller.abort();
+      controller.abort();
     };
-  }, [jsonnetMod]);
+  }, [setOutput, jsonnetMod, deferredFormState]);
 
   return (
     <Box padded={BoxPadded.LR} center>
-      <Form form={form}>
+      <Form form={form} onReset={handleReset}>
         <Header share={share} />
         <Flex gap="16px">
           <Flex dir={FlexDir.Col} gap="16px" className={styles['files']}>
@@ -362,9 +470,12 @@ const JsonnetPlayground: FC = () => {
             ))}
             <Footer add={add} />
           </Flex>
-          <div className={styles['output']}>
-            <pre>{JSON.stringify(formState, undefined, '  ')}</pre>
-          </div>
+          <Flex dir={FlexDir.Col} className={styles['output']} gap="8px">
+            <h2 className={TextClasses.TitleMedium}>Output</h2>
+            <pre>{output.stdout}</pre>
+            <h3 className={TextClasses.TitleSmall}>Logs</h3>
+            <pre>{output.stderr}</pre>
+          </Flex>
         </Flex>
       </Form>
     </Box>
