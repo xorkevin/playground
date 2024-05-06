@@ -284,12 +284,14 @@ const JsonnetPlayground: FC = () => {
       if (digest === prevCode.current) {
         return;
       }
-      const prevCodeRef = prevCode;
       const buf = await decompress(code);
       if (isSignalAborted(controller.signal)) {
         return;
       }
-      prevCodeRef.current = digest;
+      if (digest === prevCode.current) {
+        return;
+      }
+      prevCode.current = digest;
       if (isResErr(buf)) {
         console.error('Failed decompressing url code', buf.err);
         return;
