@@ -19,16 +19,22 @@ import {
   useForm,
 } from '@xorkevin/nuke/component/form';
 import {TextClasses} from '@xorkevin/nuke/component/text';
-import {type Result, isNil, isResErr, isNonNil} from '@xorkevin/nuke/computil';
+import {
+  type Result,
+  isNil,
+  isResErr,
+  isSignalAborted,
+} from '@xorkevin/nuke/computil';
 import {useRoute, useRouter} from '@xorkevin/nuke/router';
 
 import styles from './jsonnetplayground.module.css';
+
 import {
   bufToStrArray,
   compress,
   decompress,
-  strArrToBuf,
   hexDigestStr,
+  strArrToBuf,
 } from '@/compress.js';
 
 const Header = ({share}: {share: () => void}) => (
@@ -233,11 +239,11 @@ const JsonnetPlayground: FC = () => {
         console.error('Failed compressing url code', code.err);
         return;
       }
-      if (isNonNil(unmounted.current) && unmounted.current.aborted) {
+      if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
         return;
       }
       const digest = await hexDigestStr(code.value);
-      if (isNonNil(unmounted.current) && unmounted.current.aborted) {
+      if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
         return;
       }
       if (digest === prevCode.current) {
@@ -272,29 +278,28 @@ const JsonnetPlayground: FC = () => {
     const controller = new AbortController();
     void (async () => {
       const digest = await hexDigestStr(code);
-      if (controller.signal.aborted) {
+      if (isSignalAborted(controller.signal)) {
         return;
       }
       if (digest === prevCode.current) {
         return;
       }
+      const prevCodeRef = prevCode;
       const buf = await decompress(code);
-      if (isResErr(buf)) {
-        console.error('Failed decompressing url code', buf.err);
-        prevCode.current = digest;
+      if (isSignalAborted(controller.signal)) {
         return;
       }
-      if (controller.signal.aborted) {
+      prevCodeRef.current = digest;
+      if (isResErr(buf)) {
+        console.error('Failed decompressing url code', buf.err);
         return;
       }
       const s = bufToFilesState(buf.value);
       if (isResErr(s)) {
         console.error('Failed parsing url code', s.err);
-        prevCode.current = digest;
         return;
       }
       console.log('setting files state');
-      prevCode.current = digest;
       formSetState(s.value);
     })();
     return () => {

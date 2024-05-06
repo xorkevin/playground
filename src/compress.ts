@@ -1,4 +1,4 @@
-import {Result} from '@xorkevin/nuke/computil';
+import type {Result} from '@xorkevin/nuke/computil';
 
 const base64Chars = /\+|\/|=/g;
 
@@ -91,7 +91,7 @@ export const strArrToBuf = (arr: string[]): ArrayBuffer => {
   const textEncoder = new TextEncoder();
   for (let v of arr) {
     let totalWritten = 0;
-    while (true) {
+    while (v.length > 0) {
       const start = offset + totalWritten + 4;
       const end = start + v.length * 3;
       if (end > buf.byteLength) {
@@ -100,9 +100,6 @@ export const strArrToBuf = (arr: string[]): ArrayBuffer => {
       const view = new Uint8Array(buf, offset + totalWritten + 4);
       const {read, written} = textEncoder.encodeInto(v, view);
       totalWritten += written;
-      if (read >= v.length) {
-        break;
-      }
       v = v.slice(read);
     }
     const view = new DataView(buf, offset);
