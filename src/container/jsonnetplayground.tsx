@@ -19,11 +19,17 @@ import {
   useForm,
 } from '@xorkevin/nuke/component/form';
 import {TextClasses} from '@xorkevin/nuke/component/text';
-import {type Result, isNil, isResErr} from '@xorkevin/nuke/computil';
+import {type Result, isNil, isResErr, isNonNil} from '@xorkevin/nuke/computil';
 import {useRoute, useRouter} from '@xorkevin/nuke/router';
 
 import styles from './jsonnetplayground.module.css';
-import {bufToStrArray, compress, decompress, strArrToBuf} from '@/compress.js';
+import {
+  bufToStrArray,
+  compress,
+  decompress,
+  strArrToBuf,
+  hexDigestStr,
+} from '@/compress.js';
 
 const Header = ({share}: {share: () => void}) => (
   <Box padded={BoxPadded.TB} paddedSmall>
@@ -198,8 +204,7 @@ const JsonnetPlayground: FC = () => {
         const next = Object.assign({}, v);
         const idx = next.files.indexOf(id);
         if (idx > -1) {
-          next.files = next.files.slice();
-          next.files.splice(idx, 1);
+          next.files = next.files.toSpliced(idx, 1);
         }
         delete next[`${id}:name`];
         delete next[`${id}:data`];
@@ -217,6 +222,7 @@ const JsonnetPlayground: FC = () => {
       controller.abort();
     };
   }, [unmounted]);
+  const prevCode = useRef('');
 
   const route = useRoute();
   const routeNav = route.navigate;
@@ -227,27 +233,31 @@ const JsonnetPlayground: FC = () => {
         console.error('Failed compressing url code', code.err);
         return;
       }
-      if (unmounted.current?.aborted === true) {
+      if (isNonNil(unmounted.current) && unmounted.current.aborted) {
+        return;
+      }
+      const digest = await hexDigestStr(code.value);
+      if (isNonNil(unmounted.current) && unmounted.current.aborted) {
+        return;
+      }
+      if (digest === prevCode.current) {
         return;
       }
       const params = new URLSearchParams({
         codev0: code.value,
       });
+      // set code to avoid redecoding
+      prevCode.current = digest;
       routeNav(`#${params.toString()}`, true);
     })();
   }, [formState, unmounted, routeNav]);
 
   const router = useRouter();
   const routerURL = router.url;
-  const once = useRef(false);
   useEffect(() => {
-    if (once.current) {
-      return;
-    }
-    const controller = new AbortController();
     let hash = routerURL.hash;
     if (isNil(hash)) {
-      once.current = true;
+      prevCode.current = '';
       return;
     }
     if (hash.startsWith('#')) {
@@ -256,14 +266,22 @@ const JsonnetPlayground: FC = () => {
     const u = new URLSearchParams(hash);
     const code = u.get('codev0');
     if (isNil(code) || code === '') {
-      once.current = true;
+      prevCode.current = '';
       return;
     }
+    const controller = new AbortController();
     void (async () => {
+      const digest = await hexDigestStr(code);
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (digest === prevCode.current) {
+        return;
+      }
       const buf = await decompress(code);
       if (isResErr(buf)) {
         console.error('Failed decompressing url code', buf.err);
-        once.current = true;
+        prevCode.current = digest;
         return;
       }
       if (controller.signal.aborted) {
@@ -272,16 +290,17 @@ const JsonnetPlayground: FC = () => {
       const s = bufToFilesState(buf.value);
       if (isResErr(s)) {
         console.error('Failed parsing url code', s.err);
-        once.current = true;
+        prevCode.current = digest;
         return;
       }
-      once.current = true;
+      console.log('setting files state');
+      prevCode.current = digest;
       formSetState(s.value);
     })();
     return () => {
       controller.abort();
     };
-  }, [once, routerURL, formSetState]);
+  }, [prevCode, routerURL, formSetState]);
 
   return (
     <Box padded={BoxPadded.LR} center>

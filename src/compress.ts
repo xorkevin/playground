@@ -131,3 +131,11 @@ export const bufToStrArray = (buf: ArrayBuffer): Result<string[], Error> => {
   }
   return {value: arr};
 };
+
+export const hexDigestStr = async (s: string): Promise<string> => {
+  const textEncoder = new TextEncoder();
+  const digest = await crypto.subtle.digest('SHA-256', textEncoder.encode(s));
+  return Array.from(new Uint8Array(digest))
+    .map((v) => v.toString(16).padStart(2, '0'))
+    .join('');
+};
