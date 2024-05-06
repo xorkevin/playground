@@ -1,4 +1,5 @@
-import {type FC, useCallback, useEffect, useRef} from 'react';
+import {type FC, useCallback, useEffect, useRef, useState} from 'react';
+import jsonnetEnginePath from '@wasm/jsonnet.engine.wasm';
 
 import {
   Box,
@@ -36,6 +37,7 @@ import {
   hexDigestStr,
   strArrToBuf,
 } from '@/compress.js';
+import {compileStreaming, runMod} from '@/wasi.js';
 
 const Header = ({share}: {share: () => void}) => (
   <Box padded={BoxPadded.TB} paddedSmall>
@@ -308,6 +310,45 @@ const JsonnetPlayground: FC = () => {
       controller.abort();
     };
   }, [prevCode, routerURL, formSetState]);
+
+  const [jsonnetMod, setJsonnetMod] = useState<WebAssembly.Module | undefined>(
+    undefined,
+  );
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      const mod = await compileStreaming(fetch(jsonnetEnginePath));
+      if (isSignalAborted(controller.signal)) {
+        return;
+      }
+      if (isResErr(mod)) {
+        console.error('Failed compiling wasm module', mod.err);
+        return;
+      }
+      setJsonnetMod(mod.value);
+    })();
+    return () => {
+      return controller.abort();
+    };
+  }, [setJsonnetMod]);
+
+  useEffect(() => {
+    if (isNil(jsonnetMod)) {
+      return;
+    }
+
+    const controller = new AbortController();
+    void (async () => {
+      const res = await runMod(jsonnetMod, {});
+      if (isResErr(res)) {
+        console.error('Failed running wasm module', res.err);
+        return;
+      }
+    })();
+    return () => {
+      return controller.abort();
+    };
+  }, [jsonnetMod]);
 
   return (
     <Box padded={BoxPadded.LR} center>

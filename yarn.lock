@@ -12,6 +12,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@bjorn3/browser_wasi_shim@npm:^0.3.0":
+  version: 0.3.0
+  resolution: "@bjorn3/browser_wasi_shim@npm:0.3.0"
+  checksum: 10c0/9627bdcac969176a3cdd9056425bb0be9f79e3bab3458933879bafa9e49e7c80b6417ed3e883cf1787286a0554fca28ccd9983c969e31a38de15aa0435310581
+  languageName: node
+  linkType: hard
+
 "@discoveryjs/json-ext@npm:^0.5.0":
   version: 0.5.7
   resolution: "@discoveryjs/json-ext@npm:0.5.7"
@@ -4721,6 +4728,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "playground@workspace:."
   dependencies:
+    "@bjorn3/browser_wasi_shim": "npm:^0.3.0"
     "@eslint/eslintrc": "npm:^3.0.2"
     "@eslint/js": "npm:^9.2.0"
     "@fontsource-variable/inter": "npm:^5.0.18"

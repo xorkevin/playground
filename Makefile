@@ -1,14 +1,19 @@
-.PHONY: all setup build dev lint format clean cleandist test devserve deploycopy
+.PHONY: all setup buildlib build dev lint format clean cleandist devserve deploycopy
 
 all: build
 
 setup:
 	yarn dlx @yarnpkg/sdks base
 
-build:
+buildlib:
+	mkdir -p ./bin
+	GOOS=wasip1 GOARCH=wasm go build -trimpath -ldflags "-w -s" -o ./bin/jsonnet.wasm ./pkg/engine/jsonnet
+	wasm-opt -Os --enable-bulk-memory -o ./bin/jsonnet.engine.wasm ./bin/jsonnet.wasm
+
+build: buildlib
 	yarn run build
 
-dev:
+dev: buildlib
 	yarn run build-dev
 
 lint:
@@ -18,13 +23,11 @@ format:
 	yarn run format
 
 clean:
+	if [ -d ./bin ]; then rm -r ./bin; fi
 	yarn run clean
 
 cleandist:
 	if [ -d ./dist ]; then rm -r ./dist; fi
-
-test:
-	yarn run test
 
 devserve:
 	fsserve serve --config fsserve.json --base ./dist

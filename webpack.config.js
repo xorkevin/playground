@@ -46,6 +46,7 @@ export default (_env, argv) => {
       },
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),
+        '@wasm': fileURLToPath(new URL('./bin', import.meta.url)),
       },
     },
 
@@ -84,6 +85,13 @@ export default (_env, argv) => {
           type: 'asset/resource',
           generator: {
             filename: 'static/fonts/[name].[contenthash][ext]',
+          },
+        },
+        {
+          test: /\.wasm/,
+          type: 'asset/resource',
+          generator: {
+            filename: 'static/wasm/[name].[contenthash][ext]',
           },
         },
       ],
