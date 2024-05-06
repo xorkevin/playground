@@ -110,6 +110,16 @@ var nativeFuncs = []NativeFunc{
 		Params: []string{"a", "b"},
 	},
 	{
+		Name: "jsonMergePatchAll",
+		Fn: func(args []any) (any, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("%w: jsonMergePatchAll needs 2 arguments", ErrInvalidArgs)
+			}
+			return kjson.MergePatchAll(args[0], args[1]), nil
+		},
+		Params: []string{"a", "b"},
+	},
+	{
 		Name: "yamlMarshal",
 		Fn: func(args []any) (any, error) {
 			if len(args) != 1 {

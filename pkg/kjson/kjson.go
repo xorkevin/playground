@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"slices"
 )
 
 // Marshal marshals json without escaping html
@@ -46,6 +47,35 @@ func MergePatch(target, patch any) any {
 			delete(t, k)
 		} else {
 			t[k] = MergePatch(t[k], v)
+		}
+	}
+	return t
+}
+
+func MergePatchAll(target, patch any) any {
+	{
+		p, ok := patch.([]any)
+		if ok {
+			if st, ok := target.([]any); ok {
+				return slices.Concat(st, p)
+			}
+		}
+	}
+	p, ok := patch.(map[string]any)
+	if !ok {
+		return patch
+	}
+	t := map[string]any{}
+	if ot, ok := target.(map[string]any); ok {
+		for k, v := range ot {
+			t[k] = v
+		}
+	}
+	for k, v := range p {
+		if v == nil {
+			delete(t, k)
+		} else {
+			t[k] = MergePatchAll(t[k], v)
 		}
 	}
 	return t
