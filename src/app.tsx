@@ -36,6 +36,11 @@ const routes: Route[] = [
       async () => await import('./container/jsonnetplayground.js'),
     ),
   },
+  {
+    path: '/play/js',
+    exact: true,
+    component: lazy(async () => await import('./container/jsplayground.js')),
+  },
 ];
 
 const App: FC = () => {
@@ -78,6 +83,9 @@ const App: FC = () => {
               <NavBar matchesAriaCurrent="page" aria-label="Site navigation">
                 <NavBar.Link href="play/jsonnet" exact>
                   Jsonnet
+                </NavBar.Link>
+                <NavBar.Link href="play/js" exact>
+                  JS
                 </NavBar.Link>
               </NavBar>
             </Flex>

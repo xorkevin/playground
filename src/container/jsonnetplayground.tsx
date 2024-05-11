@@ -36,7 +36,7 @@ import {
 } from '@xorkevin/nuke/computil';
 import {useRoute, useRouter} from '@xorkevin/nuke/router';
 
-import styles from './jsonnetplayground.module.css';
+import styles from './playground.module.css';
 
 import {
   bufToStrArray,

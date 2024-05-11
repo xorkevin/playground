@@ -138,6 +138,22 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@jitl/quickjs-ffi-types@npm:0.29.1":
+  version: 0.29.1
+  resolution: "@jitl/quickjs-ffi-types@npm:0.29.1"
+  checksum: 10c0/6d3f49e6d550450463156cd3e70b25a702e7e49a20b58bd4aeda6c7dfdc9e3668a26758f5f488dfad6bdfabd6a69134fc0905d25c20ba88aa11b78805817b524
+  languageName: node
+  linkType: hard
+
+"@jitl/quickjs-wasmfile-release-sync@npm:^0.29.1":
+  version: 0.29.1
+  resolution: "@jitl/quickjs-wasmfile-release-sync@npm:0.29.1"
+  dependencies:
+    "@jitl/quickjs-ffi-types": "npm:0.29.1"
+  checksum: 10c0/b58a904232f01b26fd5886a610be09814bbc30e89db6f923b100dcf5f77ed35254d5f397e787d62f5f414fb14fd3b83670681d51a907dbdb40d40b19d3a6c12f
+  languageName: node
+  linkType: hard
+
 "@jridgewell/gen-mapping@npm:^0.3.5":
   version: 0.3.5
   resolution: "@jridgewell/gen-mapping@npm:0.3.5"
@@ -4732,6 +4748,7 @@ __metadata:
     "@eslint/eslintrc": "npm:^3.0.2"
     "@eslint/js": "npm:^9.2.0"
     "@fontsource-variable/inter": "npm:^5.0.18"
+    "@jitl/quickjs-wasmfile-release-sync": "npm:^0.29.1"
     "@types/react": "npm:^18.3.1"
     "@types/react-dom": "npm:^18.3.0"
     "@typescript-eslint/eslint-plugin": "npm:^7.8.0"
@@ -4747,6 +4764,7 @@ __metadata:
     html-webpack-plugin: "npm:^5.6.0"
     mini-css-extract-plugin: "npm:^2.9.0"
     prettier: "npm:^3.2.5"
+    quickjs-emscripten-core: "npm:^0.29.1"
     react: "npm:^18.3.1"
     react-dom: "npm:^18.3.1"
     ts-loader: "npm:^9.5.1"
@@ -4961,6 +4979,15 @@ __metadata:
   version: 1.2.3
   resolution: "queue-microtask@npm:1.2.3"
   checksum: 10c0/900a93d3cdae3acd7d16f642c29a642aea32c2026446151f0778c62ac089d4b8e6c986811076e1ae180a694cedf077d453a11b58ff0a865629a4f82ab558e102
+  languageName: node
+  linkType: hard
+
+"quickjs-emscripten-core@npm:^0.29.1":
+  version: 0.29.1
+  resolution: "quickjs-emscripten-core@npm:0.29.1"
+  dependencies:
+    "@jitl/quickjs-ffi-types": "npm:0.29.1"
+  checksum: 10c0/b073f60376b6fbc885b39e9081878ec64eaa5bf54d888cb050d086fb1b95924e8b44dfdf80fcd7c7cff5f6379ef790881562cd54fc75c05b734d446ed2ced32c
   languageName: node
   linkType: hard
 
