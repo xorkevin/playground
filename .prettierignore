@@ -1,4 +1,5 @@
 node_modules
 .pnp.*
 .yarn/*
+.yarnrc.yml
 dist

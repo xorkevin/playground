@@ -1,10 +1,29 @@
 import {
-  bufToStrArray,
-  compress,
-  decompress,
-  hexDigestStr,
-  strArrToBuf,
-} from '@/compress.js';
+  type FC,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import QuickJSMod from '@jitl/quickjs-wasmfile-release-sync';
+import QuickJSWasmMod from '@jitl/quickjs-wasmfile-release-sync/wasm';
+import {
+  type QuickJSSyncVariant,
+  Scope,
+  isFail,
+  newQuickJSWASMModuleFromVariant,
+  newVariant,
+} from 'quickjs-emscripten-core';
+
+import {
+  Box,
+  BoxPadded,
+  Flex,
+  FlexAlignItems,
+  FlexDir,
+} from '@xorkevin/nuke/component/box';
+import {Button, ButtonGroup} from '@xorkevin/nuke/component/button';
 import {
   Field,
   Form,
@@ -13,42 +32,25 @@ import {
   TextareaResize,
   useForm,
 } from '@xorkevin/nuke/component/form';
+import {TextClasses} from '@xorkevin/nuke/component/text';
 import {
-  Result,
+  type Result,
   isNil,
   isResErr,
   isSignalAborted,
   sleep,
 } from '@xorkevin/nuke/computil';
 import {useRoute, useRouter} from '@xorkevin/nuke/router';
-import {
-  type FC,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useDeferredValue,
-} from 'react';
-import {
-  QuickJSSyncVariant,
-  Scope,
-  isFail,
-  newQuickJSWASMModuleFromVariant,
-  newVariant,
-} from 'quickjs-emscripten-core';
-import QuickJSMod from '@jitl/quickjs-wasmfile-release-sync';
-import QuickJSWasmMod from '@jitl/quickjs-wasmfile-release-sync/wasm';
-import {
-  Box,
-  BoxPadded,
-  Flex,
-  FlexAlignItems,
-  FlexDir,
-} from '@xorkevin/nuke/component/box';
-import {TextClasses} from '@xorkevin/nuke/component/text';
-import {Button, ButtonGroup} from '@xorkevin/nuke/component/button';
 
 import styles from './playground.module.css';
+
+import {
+  bufToStrArray,
+  compress,
+  decompress,
+  hexDigestStr,
+  strArrToBuf,
+} from '@/compress.js';
 import {compileStreaming} from '@/wasi.js';
 
 const Header = ({share}: {share: () => void}) => (
