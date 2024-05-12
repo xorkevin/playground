@@ -308,28 +308,32 @@ const JsonnetPlayground: FC = () => {
   const share = useCallback(() => {
     if (isNonNil(lastShare.current)) {
       lastShare.current.abort();
+      lastShare.current = undefined;
+    }
+    const unmountSignal = unmounted.current;
+    if (isNil(unmountSignal)) {
+      return;
     }
     const controller = new AbortController();
     lastShare.current = controller;
+    unmountSignal.addEventListener(
+      'abort',
+      () => {
+        controller.abort();
+      },
+      {signal: controller.signal},
+    );
     void (async () => {
       const code = await compress(filesStateToBuf(formState));
       if (isResErr(code)) {
         console.error('Failed compressing url code', code.err);
         return;
       }
-      if (
-        isNil(unmounted.current) ||
-        isSignalAborted(unmounted.current) ||
-        isSignalAborted(controller.signal)
-      ) {
+      if (isSignalAborted(controller.signal)) {
         return;
       }
       const digest = await sha256hex(code.value);
-      if (
-        isNil(unmounted.current) ||
-        isSignalAborted(unmounted.current) ||
-        isSignalAborted(controller.signal)
-      ) {
+      if (isSignalAborted(controller.signal)) {
         return;
       }
       if (digest === prevCode.current) {

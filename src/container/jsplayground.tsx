@@ -16,6 +16,7 @@ import {
   isFail,
   newQuickJSWASMModuleFromVariant,
   newVariant,
+  VmCallResult,
 } from 'quickjs-emscripten-core';
 
 import {
@@ -275,28 +276,32 @@ const JSPlayground: FC = () => {
   const share = useCallback(() => {
     if (isNonNil(lastShare.current)) {
       lastShare.current.abort();
+      lastShare.current = undefined;
+    }
+    const unmountSignal = unmounted.current;
+    if (isNil(unmountSignal)) {
+      return;
     }
     const controller = new AbortController();
     lastShare.current = controller;
+    unmountSignal.addEventListener(
+      'abort',
+      () => {
+        controller.abort();
+      },
+      {signal: controller.signal},
+    );
     void (async () => {
       const code = await compress(filesStateToBuf(formState));
       if (isResErr(code)) {
         console.error('Failed compressing url code', code.err);
         return;
       }
-      if (
-        isNil(unmounted.current) ||
-        isSignalAborted(unmounted.current) ||
-        isSignalAborted(controller.signal)
-      ) {
+      if (isSignalAborted(controller.signal)) {
         return;
       }
       const digest = await sha256hex(code.value);
-      if (
-        isNil(unmounted.current) ||
-        isSignalAborted(unmounted.current) ||
-        isSignalAborted(controller.signal)
-      ) {
+      if (isSignalAborted(controller.signal)) {
         return;
       }
       if (digest === prevCode.current) {
@@ -400,18 +405,27 @@ const JSPlayground: FC = () => {
 
     if (isNonNil(lastRun.current)) {
       lastRun.current.abort();
+      lastRun.current = undefined;
     }
-    setOutput((v) => ({stdout: v.stdout, stderr: 'Loading...'}));
+    const unmountSignal = unmounted.current;
+    if (isNil(unmountSignal)) {
+      return;
+    }
     const controller = new AbortController();
     lastRun.current = controller;
+    unmountSignal.addEventListener(
+      'abort',
+      () => {
+        controller.abort();
+      },
+      {signal: controller.signal},
+    );
+
+    setOutput((v) => ({stdout: v.stdout, stderr: 'Loading...'}));
     void (async () => {
       const logs: string[] = [];
       const qjs = await newQuickJSWASMModuleFromVariant(quickjsMod);
-      if (
-        isNil(unmounted.current) ||
-        isSignalAborted(unmounted.current) ||
-        isSignalAborted(controller.signal)
-      ) {
+      if (isSignalAborted(controller.signal)) {
         return;
       }
 
@@ -437,9 +451,7 @@ const JSPlayground: FC = () => {
               console.error('Run cancelled', {interruptCycles});
               return true;
             }
-            return (
-              isNil(unmounted.current) || isSignalAborted(unmounted.current)
-            );
+            return false;
           });
           const dir = filesStateToQuickJSDir(formState);
           runtime.setModuleLoader((modName: string, ctx: QuickJSContext) => {
@@ -447,11 +459,7 @@ const JSPlayground: FC = () => {
               ctx.newObject().consume((universe) => {
                 ctx
                   .newFunction('log', (...args) => {
-                    if (
-                      isNil(unmounted.current) ||
-                      isSignalAborted(unmounted.current) ||
-                      isSignalAborted(controller.signal)
-                    ) {
+                    if (isSignalAborted(controller.signal)) {
                       return;
                     }
                     const a = args.map((v) => ctx.dump(v) as unknown);
@@ -583,50 +591,55 @@ const JSPlayground: FC = () => {
           });
 
           const vm = scope.manage(runtime.newContext());
-          const mainModRes = vm.evalCode(dir.main, MAIN_FILE_NAME, {
-            type: 'module',
-            strict: true,
-          });
-          if (isFail(mainModRes)) {
-            const resErr = scope.manage(mainModRes.error);
-            logs.push(
-              `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
-            );
-            setOutput({
-              stdout: '',
-              stderr: logs.join('\n'),
-            });
-            return;
-          }
-          const modExportsResPromise = vm.resolvePromise(
-            scope.manage(mainModRes.value),
-          );
-          vm.runtime.executePendingJobs();
-          const modExportsRes = await modExportsResPromise;
-          if (isFail(modExportsRes)) {
-            const resErr = scope.manage(modExportsRes.error);
-            if (
-              isNil(unmounted.current) ||
-              isSignalAborted(unmounted.current) ||
-              isSignalAborted(controller.signal)
-            ) {
+          const unpackQuickJSResult = (
+            res: VmCallResult<QuickJSHandle>,
+          ): QuickJSHandle | undefined => {
+            if (isFail(res)) {
+              const resErr = scope.manage(res.error);
+              if (isSignalAborted(controller.signal)) {
+                return;
+              }
+              const err = vm.dump(resErr) as unknown;
+              logs.push(`JS error: ${JSON.stringify(err, undefined, '  ')}`);
+              setOutput({
+                stdout: '',
+                stderr: logs.join('\n'),
+              });
+              return undefined;
+            }
+            const value = scope.manage(res.value);
+            if (isSignalAborted(controller.signal)) {
+              return undefined;
+            }
+            return value;
+          };
+          const waitForPromise = async (
+            v: QuickJSHandle,
+          ): Promise<QuickJSHandle | undefined> => {
+            scope.manage(v);
+            const promise = vm.resolvePromise(v);
+            vm.runtime.executePendingJobs();
+            const res = await promise;
+            // must unpack result to manage handles
+            return unpackQuickJSResult(res);
+          };
+          const unpackQuickJSCall = async (
+            res: VmCallResult<QuickJSHandle>,
+          ): Promise<QuickJSHandle | undefined> => {
+            const value = unpackQuickJSResult(res);
+            if (isNil(value)) {
               return;
             }
-            logs.push(
-              `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
-            );
-            setOutput({
-              stdout: '',
-              stderr: logs.join('\n'),
-            });
-            return;
-          }
-          const modExports = scope.manage(modExportsRes.value);
-          if (
-            isNil(unmounted.current) ||
-            isSignalAborted(unmounted.current) ||
-            isSignalAborted(controller.signal)
-          ) {
+            return await waitForPromise(value);
+          };
+
+          const modExports = await unpackQuickJSCall(
+            vm.evalCode(dir.main, MAIN_FILE_NAME, {
+              type: 'module',
+              strict: true,
+            }),
+          );
+          if (isNil(modExports)) {
             return;
           }
           logs.push(
@@ -643,45 +656,10 @@ const JSPlayground: FC = () => {
           if (vm.typeof(mainfn) !== 'function') {
             return;
           }
-          const fnRes = vm.callFunction(mainfn, vm.global);
-          if (isFail(fnRes)) {
-            const resErr = scope.manage(fnRes.error);
-            logs.push(
-              `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
-            );
-            setOutput({
-              stdout: '',
-              stderr: logs.join('\n'),
-            });
-            return;
-          }
-          const fnRetResPromise = vm.resolvePromise(scope.manage(fnRes.value));
-          vm.runtime.executePendingJobs();
-          const fnRetRes = await fnRetResPromise;
-          if (isFail(fnRetRes)) {
-            const resErr = scope.manage(fnRetRes.error);
-            if (
-              isNil(unmounted.current) ||
-              isSignalAborted(unmounted.current) ||
-              isSignalAborted(controller.signal)
-            ) {
-              return;
-            }
-            logs.push(
-              `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
-            );
-            setOutput({
-              stdout: '',
-              stderr: logs.join('\n'),
-            });
-            return;
-          }
-          const fnRet = scope.manage(fnRetRes.value);
-          if (
-            isNil(unmounted.current) ||
-            isSignalAborted(unmounted.current) ||
-            isSignalAborted(controller.signal)
-          ) {
+          const fnRet = await unpackQuickJSCall(
+            vm.callFunction(mainfn, vm.global),
+          );
+          if (isNil(fnRet)) {
             return;
           }
           setOutput({
@@ -690,7 +668,7 @@ const JSPlayground: FC = () => {
           });
         });
       } catch (err) {
-        console.error('Failed executing quickjs', err);
+        console.error('Failed executing QuickJS', err);
       }
     })();
   }, [lastRun, setOutput, quickjsMod, unmounted, formState]);
