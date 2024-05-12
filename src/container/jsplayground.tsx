@@ -433,10 +433,12 @@ const JSPlayground: FC = () => {
               console.error('Deadline exceeded', {interruptCycles});
               return true;
             }
+            if (isSignalAborted(controller.signal)) {
+              console.error('Run cancelled', {interruptCycles});
+              return true;
+            }
             return (
-              isNil(unmounted.current) ||
-              isSignalAborted(unmounted.current) ||
-              isSignalAborted(controller.signal)
+              isNil(unmounted.current) || isSignalAborted(unmounted.current)
             );
           });
           const dir = filesStateToQuickJSDir(formState);
@@ -454,7 +456,7 @@ const JSPlayground: FC = () => {
                     }
                     const a = args.map((v) => ctx.dump(v) as unknown);
                     if (logs.length > 1024) {
-                      logs.splice(0, logs.length - 512, '...omitted');
+                      logs.splice(0, logs.length - 512, '...omitted...');
                     }
                     logs.push(JSON.stringify(a, undefined, '  '));
                     setOutput({
