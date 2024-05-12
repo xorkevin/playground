@@ -14,6 +14,8 @@ import {
   isFail,
   newQuickJSWASMModuleFromVariant,
   newVariant,
+  QuickJSContext,
+  QuickJSHandle,
 } from 'quickjs-emscripten-core';
 
 import {
@@ -27,6 +29,8 @@ import {Button, ButtonGroup} from '@xorkevin/nuke/component/button';
 import {
   Field,
   Form,
+  FormValue,
+  Input,
   Label,
   Textarea,
   TextareaResize,
@@ -48,10 +52,11 @@ import {
   bufToStrArray,
   compress,
   decompress,
-  hexDigestStr,
+  sha256hex,
   strArrToBuf,
 } from '@/compress.js';
 import {compileStreaming} from '@/wasi.js';
+import {CloseIcon} from './playgroundui.js';
 
 const Header = ({share}: {share: () => void}) => (
   <Box padded={BoxPadded.TB} paddedSmall>
@@ -67,14 +72,36 @@ const Header = ({share}: {share: () => void}) => (
   </Box>
 );
 
-const PlaygroundFile = () => {
+const MAIN_FILE_ID = 'MAIN';
+const MAIN_FILE_NAME = 'main.js';
+
+const PlaygroundFile = ({id, rm}: {id: string; rm: (id: string) => void}) => {
+  const isMain = id === MAIN_FILE_ID;
+  const del = useCallback(() => {
+    rm(id);
+  }, [id, rm]);
   return (
     <div>
+      <Field>
+        <Flex alignItems={FlexAlignItems.Center} gap="8px">
+          <Label>Filename</Label>
+          <Input
+            name={`${id}:name`}
+            value={isMain ? MAIN_FILE_NAME : undefined}
+            readOnly={isMain}
+          />
+          {!isMain && (
+            <Button onClick={del} paddedSmall aria-label="Remove">
+              <CloseIcon />
+            </Button>
+          )}
+        </Flex>
+      </Field>
       <Field>
         <Flex dir={FlexDir.Col}>
           <Label>Data</Label>
           <Textarea
-            name="content"
+            name={`${id}:data`}
             resize={TextareaResize.Vertical}
             rows={16}
             monospace
@@ -86,12 +113,26 @@ const PlaygroundFile = () => {
   );
 };
 
+const Footer = ({add}: {add: () => void}) => (
+  <Box padded={BoxPadded.TB} paddedSmall>
+    <ButtonGroup>
+      <Button onClick={add}>Add</Button>
+    </ButtonGroup>
+  </Box>
+);
+
 type FilesState = {
-  content: string;
+  files: string[];
+  [key: string]: FormValue;
 };
 
+const getStr = (s: unknown): string => (typeof s === 'string' ? s : '');
+
 const filesStateToBuf = (s: FilesState): ArrayBuffer => {
-  return strArrToBuf([s.content]);
+  const arr = [getStr(s[`${MAIN_FILE_ID}:data`])].concat(
+    s.files.flatMap((id) => [getStr(s[`${id}:name`]), getStr(s[`${id}:data`])]),
+  );
+  return strArrToBuf(arr);
 };
 
 const bufToFilesState = (buf: ArrayBuffer): Result<FilesState, Error> => {
@@ -99,18 +140,60 @@ const bufToFilesState = (buf: ArrayBuffer): Result<FilesState, Error> => {
   if (isResErr(arr)) {
     return arr;
   }
-  if (arr.value.length !== 1) {
+  if (arr.value.length < 1) {
     return {err: new Error('File state is malformed')};
   }
+  const files: string[] = [];
   const state: FilesState = {
-    content: arr.value[0] ?? '',
+    files,
+    [`${MAIN_FILE_ID}:data`]: arr.value[0],
   };
+  const rest = arr.value.slice(1);
+  if (rest.length % 2 !== 0) {
+    return {err: new Error('File state is malformed')};
+  }
+  for (let i = 1; i < rest.length; i += 2) {
+    const name = rest[i - 1];
+    const data = rest[i];
+    const id = crypto.randomUUID() as string;
+    files.push(id);
+    state[`${id}:name`] = name ?? '';
+    state[`${id}:data`] = data ?? '';
+  }
   return {value: state};
 };
 
-const initFilesState = (): FilesState => {
+type QuickJSDir = {
+  files: Map<string, string>;
+  main: string;
+};
+
+const filesStateToQuickJSDir = (s: FilesState): QuickJSDir => {
+  const files = new Map<string, string>();
+  s.files.forEach((id) => {
+    files.set(getStr(s[`${id}:name`]), getStr(s[`${id}:data`]));
+  });
   return {
-    content: '',
+    files,
+    main: getStr(s[`${MAIN_FILE_ID}:data`]),
+  };
+};
+
+const initFilesState = (): FilesState => {
+  const id = crypto.randomUUID() as string;
+  return {
+    files: [id],
+    [`${MAIN_FILE_ID}:data`]: `import * as secret from './secret.js';
+
+export default secret.keyhash;
+`,
+    [`${id}:name`]: 'secret.js',
+    [`${id}:data`]: `import u from 'universe:std';
+
+const key = 'top secret';
+u.log(key);
+export const keyhash = await u.sha256hex(key);
+`,
   };
 };
 
@@ -120,6 +203,59 @@ const JSPlayground: FC = () => {
   const form = useForm(initFilesState);
   const formState = form.state;
   const formSetState = form.setState;
+
+  useEffect(() => {
+    formSetState((v) => {
+      let copy = undefined;
+      const s = new Set<string>(formState.files);
+      for (const k of Object.keys(v)) {
+        if (k === 'files' || k === 'strout') {
+          continue;
+        }
+        const [name] = k.split(':', 1) as [string];
+        if (name !== MAIN_FILE_ID && !s.has(name)) {
+          if (copy === undefined) {
+            copy = Object.assign({}, v);
+          }
+          delete copy[k];
+        }
+      }
+      return copy ?? v;
+    });
+  }, [formState, formSetState]);
+
+  const add = useCallback(() => {
+    formSetState((v) => {
+      const next = Object.assign({}, v);
+      next.files = next.files.slice();
+      const id = crypto.randomUUID() as string;
+      next.files.push(id);
+      Object.assign(next, {
+        [`${id}:name`]: '',
+        [`${id}:data`]: '',
+      });
+      return next;
+    });
+  }, [formSetState]);
+
+  const rm = useCallback(
+    (id: string) => {
+      formSetState((v) => {
+        if (id === MAIN_FILE_ID) {
+          return v;
+        }
+        const next = Object.assign({}, v);
+        const idx = next.files.indexOf(id);
+        if (idx > -1) {
+          next.files = next.files.toSpliced(idx, 1);
+        }
+        delete next[`${id}:name`];
+        delete next[`${id}:data`];
+        return next;
+      });
+    },
+    [formSetState],
+  );
 
   const unmounted = useRef<AbortSignal | undefined>();
   useEffect(() => {
@@ -143,7 +279,7 @@ const JSPlayground: FC = () => {
       if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
         return;
       }
-      const digest = await hexDigestStr(code.value);
+      const digest = await sha256hex(code.value);
       if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
         return;
       }
@@ -182,7 +318,7 @@ const JSPlayground: FC = () => {
     }
     const controller = new AbortController();
     void (async () => {
-      const digest = await hexDigestStr(code);
+      const digest = await sha256hex(code);
       if (isSignalAborted(controller.signal)) {
         return;
       }
@@ -260,9 +396,9 @@ const JSPlayground: FC = () => {
         return;
       }
 
-      Scope.withScope((scope: Scope) => {
+      await Scope.withScopeAsync(async (scope: Scope) => {
         const runtime = scope.manage(qjs.newRuntime());
-        runtime.setMemoryLimit(2 * 1024 * 1024);
+        runtime.setMemoryLimit(10 * 1024 * 1024);
         runtime.setMaxStackSize(1024 * 1024);
         let interruptCycles = 0;
         runtime.setInterruptHandler(() => {
@@ -272,47 +408,160 @@ const JSPlayground: FC = () => {
           }
           return false;
         });
-        const context = scope.manage(runtime.newContext());
-        const result = context.evalCode(deferredFormState.content, 'main.js', {
+        const dir = filesStateToQuickJSDir(deferredFormState);
+        runtime.setModuleLoader((modName: string, ctx: QuickJSContext) => {
+          if (modName === 'universe:std') {
+            ctx.newObject().consume((universe) => {
+              ctx
+                .newFunction('log', (...args) => {
+                  if (isSignalAborted(controller.signal)) {
+                    return;
+                  }
+                  const a = args.map((v) => ctx.dump(v) as unknown);
+                  logs.push(JSON.stringify(a, undefined, '  '));
+                  setOutput({
+                    stdout: '',
+                    stderr: logs.join('\n'),
+                  });
+                })
+                .consume((v) => ctx.setProp(universe, 'log', v));
+              ctx
+                .newFunction('sha256hex', (s: QuickJSHandle) => {
+                  if (ctx.typeof(s) !== 'string') {
+                    return {
+                      error: ctx.newError(
+                        new Error('Cannot hash a non-string'),
+                      ),
+                    };
+                  }
+                  const str = ctx.getString(s);
+                  const promise = ctx.newPromise();
+                  promise.settled.then(() => {
+                    if (!ctx.runtime.alive) {
+                      return;
+                    }
+                    ctx.runtime.executePendingJobs();
+                  });
+                  sha256hex(str)
+                    .then((v) => {
+                      if (!ctx.alive) {
+                        return;
+                      }
+                      promise.resolve(ctx.newString(v));
+                    })
+                    .catch((err: unknown) => {
+                      console.log(ctx.alive, ctx.runtime.alive, err);
+                      if (!ctx.alive) {
+                        return;
+                      }
+                      if (err instanceof Error) {
+                        promise.reject(ctx.newError(err));
+                      } else {
+                        promise.reject(ctx.newError(JSON.stringify(err)));
+                      }
+                    });
+                  return {value: promise.handle};
+                })
+                .consume((v) => ctx.setProp(universe, 'sha256hex', v));
+              ctx.setProp(ctx.global, 'universe', universe);
+            });
+            return {value: `export default universe`};
+          }
+          const f = dir.files.get(modName);
+          if (isNil(f)) {
+            return {error: new Error(`No module ${modName}`)};
+          }
+          return {value: f};
+        });
+
+        const vm = scope.manage(runtime.newContext());
+        const mainModRes = vm.evalCode(dir.main, MAIN_FILE_NAME, {
           type: 'module',
           strict: true,
         });
-        if (isFail(result)) {
-          const resErr = scope.manage(result.error);
+        if (isFail(mainModRes)) {
+          const resErr = scope.manage(mainModRes.error);
+          logs.push(
+            `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
+          );
           setOutput({
             stdout: '',
-            stderr: `${logs.join('\n')}\nJS error: ${JSON.stringify(context.dump(resErr), undefined, '  ')}`,
+            stderr: logs.join('\n'),
           });
           return;
         }
-        const modExports = scope.manage(result.value);
-        if (context.typeof(modExports) !== 'object') {
-          setOutput({
-            stdout: ``,
-            stderr: `${logs.join('\n')}\nModule exports: ${JSON.stringify(context.dump(modExports), undefined, '  ')}`,
-          });
-          return;
-        }
-        const mainfn = scope.manage(context.getProp(modExports, 'default'));
-        if (context.typeof(mainfn) !== 'function') {
-          setOutput({
-            stdout: ``,
-            stderr: `${logs.join('\n')}\nModule exports: ${JSON.stringify(context.dump(modExports), undefined, '  ')}`,
-          });
-          return;
-        }
-        const fnresult = context.callFunction(mainfn, context.global);
-        if (isFail(fnresult)) {
-          const resErr = scope.manage(fnresult.error);
+        const modExportsResPromise = vm.resolvePromise(
+          scope.manage(mainModRes.value),
+        );
+        vm.runtime.executePendingJobs();
+        const modExportsRes = await modExportsResPromise;
+        if (isFail(modExportsRes)) {
+          const resErr = scope.manage(modExportsRes.error);
+          if (isSignalAborted(controller.signal)) {
+            return;
+          }
+          logs.push(
+            `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
+          );
           setOutput({
             stdout: '',
-            stderr: `${logs.join('\n')}\nJS error: ${JSON.stringify(context.dump(resErr), undefined, '  ')}`,
+            stderr: logs.join('\n'),
           });
           return;
         }
-        const fnret = scope.manage(fnresult.value);
+        const modExports = scope.manage(modExportsRes.value);
+        if (isSignalAborted(controller.signal)) {
+          return;
+        }
+        logs.push(
+          `Main module exports: ${JSON.stringify(vm.dump(modExports), undefined, '  ')}`,
+        );
         setOutput({
-          stdout: JSON.stringify(context.dump(fnret), undefined, '  '),
+          stdout: '',
+          stderr: logs.join('\n'),
+        });
+        if (vm.typeof(modExports) !== 'object') {
+          return;
+        }
+        const mainfn = scope.manage(vm.getProp(modExports, 'default'));
+        if (vm.typeof(mainfn) !== 'function') {
+          return;
+        }
+        const fnRes = vm.callFunction(mainfn, vm.global);
+        if (isFail(fnRes)) {
+          const resErr = scope.manage(fnRes.error);
+          logs.push(
+            `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
+          );
+          setOutput({
+            stdout: '',
+            stderr: logs.join('\n'),
+          });
+          return;
+        }
+        const fnRetResPromise = vm.resolvePromise(scope.manage(fnRes.value));
+        vm.runtime.executePendingJobs();
+        const fnRetRes = await fnRetResPromise;
+        if (isFail(fnRetRes)) {
+          const resErr = scope.manage(fnRetRes.error);
+          if (isSignalAborted(controller.signal)) {
+            return;
+          }
+          logs.push(
+            `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
+          );
+          setOutput({
+            stdout: '',
+            stderr: logs.join('\n'),
+          });
+          return;
+        }
+        const fnRet = scope.manage(fnRetRes.value);
+        if (isSignalAborted(controller.signal)) {
+          return;
+        }
+        setOutput({
+          stdout: JSON.stringify(vm.dump(fnRet), undefined, '  '),
           stderr: logs.join('\n'),
         });
       });
@@ -328,7 +577,11 @@ const JSPlayground: FC = () => {
         <Header share={share} />
         <Flex gap="16px">
           <Flex dir={FlexDir.Col} gap="16px" className={styles['files']}>
-            <PlaygroundFile />
+            <PlaygroundFile id={MAIN_FILE_ID} rm={rm} />
+            {formState.files.map((id) => (
+              <PlaygroundFile key={id} id={id} rm={rm} />
+            ))}
+            <Footer add={add} />
           </Flex>
           <Flex dir={FlexDir.Col} className={styles['output']} gap="8px">
             <h2 className={TextClasses.TitleMedium}>Output</h2>

@@ -42,10 +42,11 @@ import {
   bufToStrArray,
   compress,
   decompress,
-  hexDigestStr,
+  sha256hex,
   strArrToBuf,
 } from '@/compress.js';
 import {compileStreaming, runMod} from '@/wasi.js';
+import {CloseIcon} from './playgroundui.js';
 
 const Header = ({share}: {share: () => void}) => (
   <Box padded={BoxPadded.TB} paddedSmall>
@@ -69,24 +70,6 @@ const Header = ({share}: {share: () => void}) => (
 
 const MAIN_FILE_ID = 'MAIN';
 const MAIN_FILE_NAME = 'main.jsonnet';
-
-const CloseIcon = () => (
-  <svg
-    className={styles['close-icon']}
-    aria-hidden={true}
-    width="16"
-    height="16"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="square"
-    strokeLinejoin="miter"
-    fill="none"
-  >
-    <polyline points="6 6 18 18" />
-    <polyline points="18 6 6 18" />
-  </svg>
-);
 
 const PlaygroundFile = ({id, rm}: {id: string; rm: (id: string) => void}) => {
   const isMain = id === MAIN_FILE_ID;
@@ -330,7 +313,7 @@ const JsonnetPlayground: FC = () => {
       if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
         return;
       }
-      const digest = await hexDigestStr(code.value);
+      const digest = await sha256hex(code.value);
       if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
         return;
       }
@@ -369,7 +352,7 @@ const JsonnetPlayground: FC = () => {
     }
     const controller = new AbortController();
     void (async () => {
-      const digest = await hexDigestStr(code);
+      const digest = await sha256hex(code);
       if (isSignalAborted(controller.signal)) {
         return;
       }
