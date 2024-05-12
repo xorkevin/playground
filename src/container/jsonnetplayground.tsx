@@ -30,6 +30,7 @@ import {TextClasses} from '@xorkevin/nuke/component/text';
 import {
   type Result,
   isNil,
+  isNonNil,
   isResErr,
   isSignalAborted,
   sleep,
@@ -37,6 +38,7 @@ import {
 import {useRoute, useRouter} from '@xorkevin/nuke/router';
 
 import styles from './playground.module.css';
+import {CloseIcon} from './playgroundui.js';
 
 import {
   bufToStrArray,
@@ -46,7 +48,6 @@ import {
   strArrToBuf,
 } from '@/compress.js';
 import {compileStreaming, runMod} from '@/wasi.js';
-import {CloseIcon} from './playgroundui.js';
 
 const Header = ({share}: {share: () => void}) => (
   <Box padded={BoxPadded.TB} paddedSmall>
@@ -301,20 +302,34 @@ const JsonnetPlayground: FC = () => {
   }, [unmounted]);
   const prevCode = useRef('');
 
+  const lastShare = useRef<AbortController | undefined>();
   const route = useRoute();
   const routeNav = route.navigate;
   const share = useCallback(() => {
+    if (isNonNil(lastShare.current)) {
+      lastShare.current.abort();
+    }
+    const controller = new AbortController();
+    lastShare.current = controller;
     void (async () => {
       const code = await compress(filesStateToBuf(formState));
       if (isResErr(code)) {
         console.error('Failed compressing url code', code.err);
         return;
       }
-      if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
+      if (
+        isNil(unmounted.current) ||
+        isSignalAborted(unmounted.current) ||
+        isSignalAborted(controller.signal)
+      ) {
         return;
       }
       const digest = await sha256hex(code.value);
-      if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
+      if (
+        isNil(unmounted.current) ||
+        isSignalAborted(unmounted.current) ||
+        isSignalAborted(controller.signal)
+      ) {
         return;
       }
       if (digest === prevCode.current) {
@@ -327,7 +342,7 @@ const JsonnetPlayground: FC = () => {
       prevCode.current = digest;
       routeNav(`#${params.toString()}`, true);
     })();
-  }, [formState, unmounted, routeNav]);
+  }, [lastShare, formState, unmounted, routeNav]);
 
   const handleReset = useCallback(() => {
     routeNav('', true);
@@ -441,6 +456,8 @@ const JsonnetPlayground: FC = () => {
     };
   }, [setOutput, jsonnetMod, deferredFormState]);
 
+  const deferredOutput = useDeferredValue(output);
+
   return (
     <Box padded={BoxPadded.LR} center>
       <Form form={form} onReset={handleReset}>
@@ -455,9 +472,9 @@ const JsonnetPlayground: FC = () => {
           </Flex>
           <Flex dir={FlexDir.Col} className={styles['output']} gap="8px">
             <h2 className={TextClasses.TitleMedium}>Output</h2>
-            <pre>{output.stdout}</pre>
+            <pre>{deferredOutput.stdout}</pre>
             <h3 className={TextClasses.TitleSmall}>Logs</h3>
-            <pre>{output.stderr}</pre>
+            <pre>{deferredOutput.stderr}</pre>
           </Flex>
         </Flex>
       </Form>

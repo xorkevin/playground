@@ -9,13 +9,13 @@ import {
 import QuickJSMod from '@jitl/quickjs-wasmfile-release-sync';
 import QuickJSWasmMod from '@jitl/quickjs-wasmfile-release-sync/wasm';
 import {
+  type QuickJSContext,
+  type QuickJSHandle,
   type QuickJSSyncVariant,
   Scope,
   isFail,
   newQuickJSWASMModuleFromVariant,
   newVariant,
-  QuickJSContext,
-  QuickJSHandle,
 } from 'quickjs-emscripten-core';
 
 import {
@@ -29,7 +29,7 @@ import {Button, ButtonGroup} from '@xorkevin/nuke/component/button';
 import {
   Field,
   Form,
-  FormValue,
+  type FormValue,
   Input,
   Label,
   Textarea,
@@ -40,6 +40,7 @@ import {TextClasses} from '@xorkevin/nuke/component/text';
 import {
   type Result,
   isNil,
+  isNonNil,
   isResErr,
   isSignalAborted,
   sleep,
@@ -47,6 +48,7 @@ import {
 import {useRoute, useRouter} from '@xorkevin/nuke/router';
 
 import styles from './playground.module.css';
+import {CloseIcon} from './playgroundui.js';
 
 import {
   bufToStrArray,
@@ -56,9 +58,8 @@ import {
   strArrToBuf,
 } from '@/compress.js';
 import {compileStreaming} from '@/wasi.js';
-import {CloseIcon} from './playgroundui.js';
 
-const Header = ({share}: {share: () => void}) => (
+const Header = ({share, run}: {share: () => void; run: () => void}) => (
   <Box padded={BoxPadded.TB} paddedSmall>
     <Flex alignItems={FlexAlignItems.Center} gap="16px">
       <hgroup>
@@ -67,6 +68,7 @@ const Header = ({share}: {share: () => void}) => (
       <ButtonGroup>
         <Button type="reset">Reset</Button>
         <Button onClick={share}>Share</Button>
+        <Button onClick={run}>Run</Button>
       </ButtonGroup>
     </Flex>
   </Box>
@@ -267,20 +269,34 @@ const JSPlayground: FC = () => {
   }, [unmounted]);
   const prevCode = useRef('');
 
+  const lastShare = useRef<AbortController | undefined>();
   const route = useRoute();
   const routeNav = route.navigate;
   const share = useCallback(() => {
+    if (isNonNil(lastShare.current)) {
+      lastShare.current.abort();
+    }
+    const controller = new AbortController();
+    lastShare.current = controller;
     void (async () => {
       const code = await compress(filesStateToBuf(formState));
       if (isResErr(code)) {
         console.error('Failed compressing url code', code.err);
         return;
       }
-      if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
+      if (
+        isNil(unmounted.current) ||
+        isSignalAborted(unmounted.current) ||
+        isSignalAborted(controller.signal)
+      ) {
         return;
       }
       const digest = await sha256hex(code.value);
-      if (isNil(unmounted.current) || isSignalAborted(unmounted.current)) {
+      if (
+        isNil(unmounted.current) ||
+        isSignalAborted(unmounted.current) ||
+        isSignalAborted(controller.signal)
+      ) {
         return;
       }
       if (digest === prevCode.current) {
@@ -293,7 +309,7 @@ const JSPlayground: FC = () => {
       prevCode.current = digest;
       routeNav(`#${params.toString()}`, true);
     })();
-  }, [formState, unmounted, routeNav]);
+  }, [lastShare, formState, unmounted, routeNav]);
 
   const handleReset = useCallback(() => {
     routeNav('', true);
@@ -374,207 +390,315 @@ const JSPlayground: FC = () => {
     };
   }, [setQuickjsMod]);
 
-  const deferredFormState = useDeferredValue(formState);
+  const lastRun = useRef<AbortController | undefined>();
   const [output, setOutput] = useState(emptyOutput);
-
-  useEffect(() => {
+  const run = useCallback(() => {
     if (isNil(quickjsMod)) {
       setOutput(emptyOutput);
       return;
     }
 
+    if (isNonNil(lastRun.current)) {
+      lastRun.current.abort();
+    }
+    setOutput((v) => ({stdout: v.stdout, stderr: 'Loading...'}));
     const controller = new AbortController();
+    lastRun.current = controller;
     void (async () => {
-      setOutput((v) => ({stdout: v.stdout, stderr: 'Loading...'}));
-      await sleep(250, {signal: controller.signal});
-      if (isSignalAborted(controller.signal)) {
-        return;
-      }
       const logs: string[] = [];
       const qjs = await newQuickJSWASMModuleFromVariant(quickjsMod);
-      if (isSignalAborted(controller.signal)) {
+      if (
+        isNil(unmounted.current) ||
+        isSignalAborted(unmounted.current) ||
+        isSignalAborted(controller.signal)
+      ) {
         return;
       }
 
-      await Scope.withScopeAsync(async (scope: Scope) => {
-        const runtime = scope.manage(qjs.newRuntime());
-        runtime.setMemoryLimit(10 * 1024 * 1024);
-        runtime.setMaxStackSize(1024 * 1024);
-        let interruptCycles = 0;
-        runtime.setInterruptHandler(() => {
-          interruptCycles++;
-          if (interruptCycles > 1024) {
-            return true;
-          }
-          return false;
-        });
-        const dir = filesStateToQuickJSDir(deferredFormState);
-        runtime.setModuleLoader((modName: string, ctx: QuickJSContext) => {
-          if (modName === 'universe:std') {
-            ctx.newObject().consume((universe) => {
-              ctx
-                .newFunction('log', (...args) => {
-                  if (isSignalAborted(controller.signal)) {
-                    return;
-                  }
-                  const a = args.map((v) => ctx.dump(v) as unknown);
-                  logs.push(JSON.stringify(a, undefined, '  '));
-                  setOutput({
-                    stdout: '',
-                    stderr: logs.join('\n'),
-                  });
-                })
-                .consume((v) => ctx.setProp(universe, 'log', v));
-              ctx
-                .newFunction('sha256hex', (s: QuickJSHandle) => {
-                  if (ctx.typeof(s) !== 'string') {
-                    return {
-                      error: ctx.newError(
-                        new Error('Cannot hash a non-string'),
-                      ),
-                    };
-                  }
-                  const str = ctx.getString(s);
-                  const promise = ctx.newPromise();
-                  promise.settled.then(() => {
-                    if (!ctx.runtime.alive) {
+      try {
+        await Scope.withScopeAsync(async (scope: Scope) => {
+          const runtime = scope.manage(qjs.newRuntime());
+          runtime.setMemoryLimit(10 * 1024 * 1024);
+          runtime.setMaxStackSize(1024 * 1024);
+          const start = performance.now();
+          let interruptCycles = 0;
+          runtime.setInterruptHandler(() => {
+            interruptCycles++;
+            // every interrupt cycle is around 4096 instructions
+            if (interruptCycles > 1024) {
+              console.error('Interrupt cycles exceeded', {interruptCycles});
+              return true;
+            }
+            if (performance.now() - start > 2500) {
+              console.error('Deadline exceeded', {interruptCycles});
+              return true;
+            }
+            return (
+              isNil(unmounted.current) ||
+              isSignalAborted(unmounted.current) ||
+              isSignalAborted(controller.signal)
+            );
+          });
+          const dir = filesStateToQuickJSDir(formState);
+          runtime.setModuleLoader((modName: string, ctx: QuickJSContext) => {
+            if (modName === 'universe:std') {
+              ctx.newObject().consume((universe) => {
+                ctx
+                  .newFunction('log', (...args) => {
+                    if (
+                      isNil(unmounted.current) ||
+                      isSignalAborted(unmounted.current) ||
+                      isSignalAborted(controller.signal)
+                    ) {
                       return;
                     }
-                    ctx.runtime.executePendingJobs();
-                  });
-                  sha256hex(str)
-                    .then((v) => {
-                      if (!ctx.alive) {
-                        return;
-                      }
-                      promise.resolve(ctx.newString(v));
-                    })
-                    .catch((err: unknown) => {
-                      console.log(ctx.alive, ctx.runtime.alive, err);
-                      if (!ctx.alive) {
-                        return;
-                      }
-                      if (err instanceof Error) {
-                        promise.reject(ctx.newError(err));
-                      } else {
-                        promise.reject(ctx.newError(JSON.stringify(err)));
-                      }
+                    const a = args.map((v) => ctx.dump(v) as unknown);
+                    if (logs.length > 1024) {
+                      logs.splice(0, logs.length - 512, '...omitted');
+                    }
+                    logs.push(JSON.stringify(a, undefined, '  '));
+                    setOutput({
+                      stdout: '',
+                      stderr: logs.join('\n'),
                     });
-                  return {value: promise.handle};
-                })
-                .consume((v) => ctx.setProp(universe, 'sha256hex', v));
-              ctx.setProp(ctx.global, 'universe', universe);
-            });
-            return {value: `export default universe`};
-          }
-          const f = dir.files.get(modName);
-          if (isNil(f)) {
-            return {error: new Error(`No module ${modName}`)};
-          }
-          return {value: f};
-        });
+                  })
+                  .consume((v) => {
+                    ctx.setProp(universe, 'log', v);
+                  });
+                ctx
+                  .newFunction('sleep', (ms: QuickJSHandle) => {
+                    if (ctx.typeof(ms) !== 'number') {
+                      return {
+                        error: ctx.newError(
+                          new Error(
+                            'Must provide sleep with a number of milliseconds',
+                          ),
+                        ),
+                      };
+                    }
+                    const msV = ctx.getNumber(ms);
+                    const promise = scope.manage(ctx.newPromise());
+                    promise.settled
+                      .then(() => {
+                        if (!ctx.runtime.alive) {
+                          return;
+                        }
+                        ctx.runtime.executePendingJobs();
+                      })
+                      .catch((err: unknown) => {
+                        console.error('Unexpected QuickJS promise error', err);
+                      });
+                    sleep(msV, {signal: controller.signal})
+                      .then(() => {
+                        if (!ctx.alive) {
+                          return;
+                        }
+                        promise.resolve();
+                      })
+                      .catch((err: unknown) => {
+                        if (!ctx.alive) {
+                          return;
+                        }
+                        if (err instanceof Error) {
+                          ctx.newError(err).consume((v) => {
+                            promise.reject(v);
+                          });
+                        } else {
+                          ctx.newError(JSON.stringify(err)).consume((v) => {
+                            promise.reject(v);
+                          });
+                        }
+                      })
+                      .finally(() => {
+                        promise.dispose();
+                      });
+                    return {value: promise.handle};
+                  })
+                  .consume((v) => {
+                    ctx.setProp(universe, 'sleep', v);
+                  });
+                ctx
+                  .newFunction('sha256hex', (s: QuickJSHandle) => {
+                    if (ctx.typeof(s) !== 'string') {
+                      return {
+                        error: ctx.newError(
+                          new Error('Cannot hash a non-string'),
+                        ),
+                      };
+                    }
+                    const str = ctx.getString(s);
+                    const promise = scope.manage(ctx.newPromise());
+                    promise.settled
+                      .then(() => {
+                        if (!ctx.runtime.alive) {
+                          return;
+                        }
+                        ctx.runtime.executePendingJobs();
+                      })
+                      .catch((err: unknown) => {
+                        console.error('Unexpected QuickJS promise error', err);
+                      });
+                    sha256hex(str)
+                      .then((v) => {
+                        if (!ctx.alive) {
+                          return;
+                        }
+                        ctx.newString(v).consume((v) => {
+                          promise.resolve(v);
+                        });
+                      })
+                      .catch((err: unknown) => {
+                        if (!ctx.alive) {
+                          return;
+                        }
+                        if (err instanceof Error) {
+                          ctx.newError(err).consume((v) => {
+                            promise.reject(v);
+                          });
+                        } else {
+                          ctx.newError(JSON.stringify(err)).consume((v) => {
+                            promise.reject(v);
+                          });
+                        }
+                      })
+                      .finally(() => {
+                        promise.dispose();
+                      });
+                    return {value: promise.handle};
+                  })
+                  .consume((v) => {
+                    ctx.setProp(universe, 'sha256hex', v);
+                  });
+                ctx.setProp(ctx.global, 'universe', universe);
+              });
+              return {value: `export default universe`};
+            }
+            const f = dir.files.get(modName);
+            if (isNil(f)) {
+              return {error: new Error(`No module ${modName}`)};
+            }
+            return {value: f};
+          });
 
-        const vm = scope.manage(runtime.newContext());
-        const mainModRes = vm.evalCode(dir.main, MAIN_FILE_NAME, {
-          type: 'module',
-          strict: true,
-        });
-        if (isFail(mainModRes)) {
-          const resErr = scope.manage(mainModRes.error);
-          logs.push(
-            `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
-          );
-          setOutput({
-            stdout: '',
-            stderr: logs.join('\n'),
+          const vm = scope.manage(runtime.newContext());
+          const mainModRes = vm.evalCode(dir.main, MAIN_FILE_NAME, {
+            type: 'module',
+            strict: true,
           });
-          return;
-        }
-        const modExportsResPromise = vm.resolvePromise(
-          scope.manage(mainModRes.value),
-        );
-        vm.runtime.executePendingJobs();
-        const modExportsRes = await modExportsResPromise;
-        if (isFail(modExportsRes)) {
-          const resErr = scope.manage(modExportsRes.error);
-          if (isSignalAborted(controller.signal)) {
+          if (isFail(mainModRes)) {
+            const resErr = scope.manage(mainModRes.error);
+            logs.push(
+              `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
+            );
+            setOutput({
+              stdout: '',
+              stderr: logs.join('\n'),
+            });
+            return;
+          }
+          const modExportsResPromise = vm.resolvePromise(
+            scope.manage(mainModRes.value),
+          );
+          vm.runtime.executePendingJobs();
+          const modExportsRes = await modExportsResPromise;
+          if (isFail(modExportsRes)) {
+            const resErr = scope.manage(modExportsRes.error);
+            if (
+              isNil(unmounted.current) ||
+              isSignalAborted(unmounted.current) ||
+              isSignalAborted(controller.signal)
+            ) {
+              return;
+            }
+            logs.push(
+              `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
+            );
+            setOutput({
+              stdout: '',
+              stderr: logs.join('\n'),
+            });
+            return;
+          }
+          const modExports = scope.manage(modExportsRes.value);
+          if (
+            isNil(unmounted.current) ||
+            isSignalAborted(unmounted.current) ||
+            isSignalAborted(controller.signal)
+          ) {
             return;
           }
           logs.push(
-            `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
+            `Main module exports: ${JSON.stringify(vm.dump(modExports), undefined, '  ')}`,
           );
           setOutput({
             stdout: '',
             stderr: logs.join('\n'),
           });
-          return;
-        }
-        const modExports = scope.manage(modExportsRes.value);
-        if (isSignalAborted(controller.signal)) {
-          return;
-        }
-        logs.push(
-          `Main module exports: ${JSON.stringify(vm.dump(modExports), undefined, '  ')}`,
-        );
-        setOutput({
-          stdout: '',
-          stderr: logs.join('\n'),
-        });
-        if (vm.typeof(modExports) !== 'object') {
-          return;
-        }
-        const mainfn = scope.manage(vm.getProp(modExports, 'default'));
-        if (vm.typeof(mainfn) !== 'function') {
-          return;
-        }
-        const fnRes = vm.callFunction(mainfn, vm.global);
-        if (isFail(fnRes)) {
-          const resErr = scope.manage(fnRes.error);
-          logs.push(
-            `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
-          );
-          setOutput({
-            stdout: '',
-            stderr: logs.join('\n'),
-          });
-          return;
-        }
-        const fnRetResPromise = vm.resolvePromise(scope.manage(fnRes.value));
-        vm.runtime.executePendingJobs();
-        const fnRetRes = await fnRetResPromise;
-        if (isFail(fnRetRes)) {
-          const resErr = scope.manage(fnRetRes.error);
-          if (isSignalAborted(controller.signal)) {
+          if (vm.typeof(modExports) !== 'object') {
             return;
           }
-          logs.push(
-            `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
-          );
+          const mainfn = scope.manage(vm.getProp(modExports, 'default'));
+          if (vm.typeof(mainfn) !== 'function') {
+            return;
+          }
+          const fnRes = vm.callFunction(mainfn, vm.global);
+          if (isFail(fnRes)) {
+            const resErr = scope.manage(fnRes.error);
+            logs.push(
+              `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
+            );
+            setOutput({
+              stdout: '',
+              stderr: logs.join('\n'),
+            });
+            return;
+          }
+          const fnRetResPromise = vm.resolvePromise(scope.manage(fnRes.value));
+          vm.runtime.executePendingJobs();
+          const fnRetRes = await fnRetResPromise;
+          if (isFail(fnRetRes)) {
+            const resErr = scope.manage(fnRetRes.error);
+            if (
+              isNil(unmounted.current) ||
+              isSignalAborted(unmounted.current) ||
+              isSignalAborted(controller.signal)
+            ) {
+              return;
+            }
+            logs.push(
+              `JS error: ${JSON.stringify(vm.dump(resErr), undefined, '  ')}`,
+            );
+            setOutput({
+              stdout: '',
+              stderr: logs.join('\n'),
+            });
+            return;
+          }
+          const fnRet = scope.manage(fnRetRes.value);
+          if (
+            isNil(unmounted.current) ||
+            isSignalAborted(unmounted.current) ||
+            isSignalAborted(controller.signal)
+          ) {
+            return;
+          }
           setOutput({
-            stdout: '',
+            stdout: JSON.stringify(vm.dump(fnRet), undefined, '  '),
             stderr: logs.join('\n'),
           });
-          return;
-        }
-        const fnRet = scope.manage(fnRetRes.value);
-        if (isSignalAborted(controller.signal)) {
-          return;
-        }
-        setOutput({
-          stdout: JSON.stringify(vm.dump(fnRet), undefined, '  '),
-          stderr: logs.join('\n'),
         });
-      });
+      } catch (err) {
+        console.error('Failed executing quickjs', err);
+      }
     })();
-    return () => {
-      controller.abort();
-    };
-  }, [setOutput, quickjsMod, deferredFormState]);
+  }, [lastRun, setOutput, quickjsMod, unmounted, formState]);
+
+  const deferredOutput = useDeferredValue(output);
 
   return (
     <Box padded={BoxPadded.LR} center>
       <Form form={form} onReset={handleReset}>
-        <Header share={share} />
+        <Header share={share} run={run} />
         <Flex gap="16px">
           <Flex dir={FlexDir.Col} gap="16px" className={styles['files']}>
             <PlaygroundFile id={MAIN_FILE_ID} rm={rm} />
@@ -585,9 +709,9 @@ const JSPlayground: FC = () => {
           </Flex>
           <Flex dir={FlexDir.Col} className={styles['output']} gap="8px">
             <h2 className={TextClasses.TitleMedium}>Output</h2>
-            <pre>{output.stdout}</pre>
+            <pre>{deferredOutput.stdout}</pre>
             <h3 className={TextClasses.TitleSmall}>Logs</h3>
-            <pre>{output.stderr}</pre>
+            <pre>{deferredOutput.stderr}</pre>
           </Flex>
         </Flex>
       </Form>

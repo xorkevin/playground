@@ -1,6 +1,8 @@
+import type {FC} from 'react';
+
 import styles from './playground.module.css';
 
-export const CloseIcon = () => (
+export const CloseIcon: FC = () => (
   <svg
     className={styles['close-icon']}
     aria-hidden={true}
