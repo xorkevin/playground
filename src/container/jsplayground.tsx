@@ -1,5 +1,6 @@
 import {
   type FC,
+  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -8,16 +9,7 @@ import {
 } from 'react';
 import QuickJSMod from '@jitl/quickjs-wasmfile-release-sync';
 import QuickJSWasmMod from '@jitl/quickjs-wasmfile-release-sync/wasm';
-import {
-  type QuickJSContext,
-  type QuickJSHandle,
-  type QuickJSSyncVariant,
-  Scope,
-  isFail,
-  newQuickJSWASMModuleFromVariant,
-  newVariant,
-  VmCallResult,
-} from 'quickjs-emscripten-core';
+import {type QuickJSSyncVariant, newVariant} from 'quickjs-emscripten-core';
 
 import {
   Box,
@@ -44,12 +36,12 @@ import {
   isNonNil,
   isResErr,
   isSignalAborted,
-  sleep,
 } from '@xorkevin/nuke/computil';
 import {useRoute, useRouter} from '@xorkevin/nuke/router';
 
 import styles from './playground.module.css';
 import {CloseIcon} from './playgroundui.js';
+import {CachedLogger, type QuickJSDir, runQuickJS} from './quickjs.js';
 
 import {
   bufToStrArray,
@@ -166,11 +158,6 @@ const bufToFilesState = (buf: ArrayBuffer): Result<FilesState, Error> => {
   return {value: state};
 };
 
-type QuickJSDir = {
-  files: Map<string, string>;
-  main: string;
-};
-
 const filesStateToQuickJSDir = (s: FilesState): QuickJSDir => {
   const files = new Map<string, string>();
   s.files.forEach((id) => {
@@ -179,6 +166,7 @@ const filesStateToQuickJSDir = (s: FilesState): QuickJSDir => {
   return {
     files,
     main: getStr(s[`${MAIN_FILE_ID}:data`]),
+    mainFileName: MAIN_FILE_NAME,
   };
 };
 
@@ -186,9 +174,15 @@ const initFilesState = (): FilesState => {
   const id = crypto.randomUUID() as string;
   return {
     files: [id],
-    [`${MAIN_FILE_ID}:data`]: `import * as secret from './secret.js';
+    [`${MAIN_FILE_ID}:data`]: `import u from 'universe:std';
+import * as secret from './secret.js';
 
-export default secret.keyhash;
+u.log('Hello, world');
+
+const main = () => {
+  return secret.keyhash;
+};
+export default main;
 `,
     [`${id}:name`]: 'secret.js',
     [`${id}:data`]: `import u from 'universe:std';
@@ -200,32 +194,12 @@ export const keyhash = await u.sha256hex(key);
   };
 };
 
-const emptyOutput = () => ({stdout: '', stderr: ''});
+const emptyOutput = () => ({stdout: '', stderr: '', stats: ''});
 
 const JSPlayground: FC = () => {
   const form = useForm(initFilesState);
   const formState = form.state;
   const formSetState = form.setState;
-
-  useEffect(() => {
-    formSetState((v) => {
-      let copy = undefined;
-      const s = new Set<string>(formState.files);
-      for (const k of Object.keys(v)) {
-        if (k === 'files' || k === 'strout') {
-          continue;
-        }
-        const [name] = k.split(':', 1) as [string];
-        if (name !== MAIN_FILE_ID && !s.has(name)) {
-          if (copy === undefined) {
-            copy = Object.assign({}, v);
-          }
-          delete copy[k];
-        }
-      }
-      return copy ?? v;
-    });
-  }, [formState, formSetState]);
 
   const add = useCallback(() => {
     formSetState((v) => {
@@ -268,11 +242,12 @@ const JSPlayground: FC = () => {
       controller.abort();
     };
   }, [unmounted]);
-  const prevCode = useRef('');
 
-  const lastShare = useRef<AbortController | undefined>();
   const route = useRoute();
   const routeNav = route.navigate;
+
+  const lastShare = useRef<AbortController | undefined>();
+  const prevCode = useRef('');
   const share = useCallback(() => {
     if (isNonNil(lastShare.current)) {
       lastShare.current.abort();
@@ -314,7 +289,7 @@ const JSPlayground: FC = () => {
       prevCode.current = digest;
       routeNav(`#${params.toString()}`, true);
     })();
-  }, [lastShare, formState, unmounted, routeNav]);
+  }, [lastShare, unmounted, formState, prevCode, routeNav]);
 
   const handleReset = useCallback(() => {
     routeNav('', true);
@@ -371,9 +346,9 @@ const JSPlayground: FC = () => {
     };
   }, [prevCode, routerURL, formSetState]);
 
-  const [quickjsMod, setQuickjsMod] = useState<QuickJSSyncVariant | undefined>(
-    undefined,
-  );
+  const [quickjsMod, setQuickjsMod] = useState<
+    QuickJSSyncVariant | undefined
+  >();
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
@@ -398,19 +373,23 @@ const JSPlayground: FC = () => {
   const lastRun = useRef<AbortController | undefined>();
   const [output, setOutput] = useState(emptyOutput);
   const run = useCallback(() => {
-    if (isNil(quickjsMod)) {
-      setOutput(emptyOutput);
-      return;
-    }
-
     if (isNonNil(lastRun.current)) {
       lastRun.current.abort();
       lastRun.current = undefined;
     }
+
     const unmountSignal = unmounted.current;
     if (isNil(unmountSignal)) {
       return;
     }
+
+    if (isNil(quickjsMod)) {
+      startTransition(() => {
+        setOutput(emptyOutput);
+      });
+      return;
+    }
+
     const controller = new AbortController();
     lastRun.current = controller;
     unmountSignal.addEventListener(
@@ -421,257 +400,65 @@ const JSPlayground: FC = () => {
       {signal: controller.signal},
     );
 
-    setOutput((v) => ({stdout: v.stdout, stderr: 'Loading...'}));
+    startTransition(() => {
+      setOutput((v) => ({
+        stdout: v.stdout,
+        stderr: 'Loading...',
+        stats: v.stats,
+      }));
+    });
     void (async () => {
-      const logs: string[] = [];
-      const qjs = await newQuickJSWASMModuleFromVariant(quickjsMod);
+      const logger = new CachedLogger(1024, (l) => {
+        if (isSignalAborted(controller.signal)) {
+          return;
+        }
+        startTransition(() => {
+          setOutput({
+            stdout: '',
+            stderr: (l.isWrapped() ? ['...omitted...'] : [])
+              .concat(l.output())
+              .join('\n'),
+            stats: '',
+          });
+        });
+      });
+      const dir = filesStateToQuickJSDir(formState);
+      const res = await runQuickJS(quickjsMod, dir, {
+        logger,
+        signal: controller.signal,
+      });
       if (isSignalAborted(controller.signal)) {
         return;
       }
-
-      try {
-        await Scope.withScopeAsync(async (scope: Scope) => {
-          const runtime = scope.manage(qjs.newRuntime());
-          runtime.setMemoryLimit(10 * 1024 * 1024);
-          runtime.setMaxStackSize(1024 * 1024);
-          const start = performance.now();
-          let interruptCycles = 0;
-          runtime.setInterruptHandler(() => {
-            interruptCycles++;
-            // every interrupt cycle is around 4096 instructions
-            if (interruptCycles > 1024) {
-              console.error('Interrupt cycles exceeded', {interruptCycles});
-              return true;
-            }
-            if (performance.now() - start > 2500) {
-              console.error('Deadline exceeded', {interruptCycles});
-              return true;
-            }
-            if (isSignalAborted(controller.signal)) {
-              console.error('Run cancelled', {interruptCycles});
-              return true;
-            }
-            return false;
-          });
-          const dir = filesStateToQuickJSDir(formState);
-          runtime.setModuleLoader((modName: string, ctx: QuickJSContext) => {
-            if (modName === 'universe:std') {
-              ctx.newObject().consume((universe) => {
-                ctx
-                  .newFunction('log', (...args) => {
-                    if (isSignalAborted(controller.signal)) {
-                      return;
-                    }
-                    const a = args.map((v) => ctx.dump(v) as unknown);
-                    if (logs.length > 1024) {
-                      logs.splice(0, logs.length - 512, '...omitted...');
-                    }
-                    logs.push(JSON.stringify(a, undefined, '  '));
-                    setOutput({
-                      stdout: '',
-                      stderr: logs.join('\n'),
-                    });
-                  })
-                  .consume((v) => {
-                    ctx.setProp(universe, 'log', v);
-                  });
-                ctx
-                  .newFunction('sleep', (ms: QuickJSHandle) => {
-                    if (ctx.typeof(ms) !== 'number') {
-                      return {
-                        error: ctx.newError(
-                          new Error(
-                            'Must provide sleep with a number of milliseconds',
-                          ),
-                        ),
-                      };
-                    }
-                    const msV = ctx.getNumber(ms);
-                    const promise = scope.manage(ctx.newPromise());
-                    promise.settled
-                      .then(() => {
-                        if (!ctx.runtime.alive) {
-                          return;
-                        }
-                        ctx.runtime.executePendingJobs();
-                      })
-                      .catch((err: unknown) => {
-                        console.error('Unexpected QuickJS promise error', err);
-                      });
-                    sleep(msV, {signal: controller.signal})
-                      .then(() => {
-                        if (!ctx.alive) {
-                          return;
-                        }
-                        promise.resolve();
-                      })
-                      .catch((err: unknown) => {
-                        if (!ctx.alive) {
-                          return;
-                        }
-                        if (err instanceof Error) {
-                          ctx.newError(err).consume((v) => {
-                            promise.reject(v);
-                          });
-                        } else {
-                          ctx.newError(JSON.stringify(err)).consume((v) => {
-                            promise.reject(v);
-                          });
-                        }
-                      })
-                      .finally(() => {
-                        promise.dispose();
-                      });
-                    return {value: promise.handle};
-                  })
-                  .consume((v) => {
-                    ctx.setProp(universe, 'sleep', v);
-                  });
-                ctx
-                  .newFunction('sha256hex', (s: QuickJSHandle) => {
-                    if (ctx.typeof(s) !== 'string') {
-                      return {
-                        error: ctx.newError(
-                          new Error('Cannot hash a non-string'),
-                        ),
-                      };
-                    }
-                    const str = ctx.getString(s);
-                    const promise = scope.manage(ctx.newPromise());
-                    promise.settled
-                      .then(() => {
-                        if (!ctx.runtime.alive) {
-                          return;
-                        }
-                        ctx.runtime.executePendingJobs();
-                      })
-                      .catch((err: unknown) => {
-                        console.error('Unexpected QuickJS promise error', err);
-                      });
-                    sha256hex(str)
-                      .then((v) => {
-                        if (!ctx.alive) {
-                          return;
-                        }
-                        ctx.newString(v).consume((v) => {
-                          promise.resolve(v);
-                        });
-                      })
-                      .catch((err: unknown) => {
-                        if (!ctx.alive) {
-                          return;
-                        }
-                        if (err instanceof Error) {
-                          ctx.newError(err).consume((v) => {
-                            promise.reject(v);
-                          });
-                        } else {
-                          ctx.newError(JSON.stringify(err)).consume((v) => {
-                            promise.reject(v);
-                          });
-                        }
-                      })
-                      .finally(() => {
-                        promise.dispose();
-                      });
-                    return {value: promise.handle};
-                  })
-                  .consume((v) => {
-                    ctx.setProp(universe, 'sha256hex', v);
-                  });
-                ctx.setProp(ctx.global, 'universe', universe);
-              });
-              return {value: `export default universe`};
-            }
-            const f = dir.files.get(modName);
-            if (isNil(f)) {
-              return {error: new Error(`No module ${modName}`)};
-            }
-            return {value: f};
-          });
-
-          const vm = scope.manage(runtime.newContext());
-          const unpackQuickJSResult = (
-            res: VmCallResult<QuickJSHandle>,
-          ): QuickJSHandle | undefined => {
-            if (isFail(res)) {
-              const resErr = scope.manage(res.error);
-              if (isSignalAborted(controller.signal)) {
-                return;
-              }
-              const err = vm.dump(resErr) as unknown;
-              logs.push(`JS error: ${JSON.stringify(err, undefined, '  ')}`);
-              setOutput({
-                stdout: '',
-                stderr: logs.join('\n'),
-              });
-              return undefined;
-            }
-            const value = scope.manage(res.value);
-            if (isSignalAborted(controller.signal)) {
-              return undefined;
-            }
-            return value;
-          };
-          const waitForPromise = async (
-            v: QuickJSHandle,
-          ): Promise<QuickJSHandle | undefined> => {
-            scope.manage(v);
-            const promise = vm.resolvePromise(v);
-            vm.runtime.executePendingJobs();
-            const res = await promise;
-            // must unpack result to manage handles
-            return unpackQuickJSResult(res);
-          };
-          const unpackQuickJSCall = async (
-            res: VmCallResult<QuickJSHandle>,
-          ): Promise<QuickJSHandle | undefined> => {
-            const value = unpackQuickJSResult(res);
-            if (isNil(value)) {
-              return;
-            }
-            return await waitForPromise(value);
-          };
-
-          const modExports = await unpackQuickJSCall(
-            vm.evalCode(dir.main, MAIN_FILE_NAME, {
-              type: 'module',
-              strict: true,
-            }),
-          );
-          if (isNil(modExports)) {
-            return;
-          }
-          logs.push(
-            `Main module exports: ${JSON.stringify(vm.dump(modExports), undefined, '  ')}`,
-          );
+      if (isResErr(res)) {
+        startTransition(() => {
           setOutput({
             stdout: '',
-            stderr: logs.join('\n'),
-          });
-          if (vm.typeof(modExports) !== 'object') {
-            return;
-          }
-          const mainfn = scope.manage(vm.getProp(modExports, 'default'));
-          if (vm.typeof(mainfn) !== 'function') {
-            return;
-          }
-          const fnRet = await unpackQuickJSCall(
-            vm.callFunction(mainfn, vm.global),
-          );
-          if (isNil(fnRet)) {
-            return;
-          }
-          setOutput({
-            stdout: JSON.stringify(vm.dump(fnRet), undefined, '  '),
-            stderr: logs.join('\n'),
+            stderr: (logger.isWrapped() ? ['...omitted...'] : [])
+              .concat(logger.output())
+              .concat(JSON.stringify(res.err, undefined, '  '))
+              .join('\n'),
+            stats: '',
           });
         });
-      } catch (err) {
-        console.error('Failed executing QuickJS', err);
+        return;
       }
+      startTransition(() => {
+        setOutput({
+          stdout: isNil(res.value.value)
+            ? ''
+            : JSON.stringify(res.value.value, undefined, '  '),
+          stderr: (logger.isWrapped() ? ['...omitted...'] : [])
+            .concat(logger.output())
+            .join('\n'),
+          stats: JSON.stringify({
+            cycles: res.value.cycles,
+            durationMS: res.value.duration,
+          }),
+        });
+      });
     })();
-  }, [lastRun, setOutput, quickjsMod, unmounted, formState]);
+  }, [lastRun, unmounted, quickjsMod, setOutput, formState]);
 
   const deferredOutput = useDeferredValue(output);
 
@@ -689,6 +476,9 @@ const JSPlayground: FC = () => {
           </Flex>
           <Flex dir={FlexDir.Col} className={styles['output']} gap="8px">
             <h2 className={TextClasses.TitleMedium}>Output</h2>
+            <h3 className={TextClasses.TitleSmall}>Stats</h3>
+            <pre>{deferredOutput.stats}</pre>
+            <h3 className={TextClasses.TitleSmall}>Main function return</h3>
             <pre>{deferredOutput.stdout}</pre>
             <h3 className={TextClasses.TitleSmall}>Logs</h3>
             <pre>{deferredOutput.stderr}</pre>

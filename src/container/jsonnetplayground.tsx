@@ -1,5 +1,6 @@
 import {
   type FC,
+  startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -239,26 +240,6 @@ const JsonnetPlayground: FC = () => {
   const formState = form.state;
   const formSetState = form.setState;
 
-  useEffect(() => {
-    formSetState((v) => {
-      let copy = undefined;
-      const s = new Set<string>(formState.files);
-      for (const k of Object.keys(v)) {
-        if (k === 'files' || k === 'strout') {
-          continue;
-        }
-        const [name] = k.split(':', 1) as [string];
-        if (name !== MAIN_FILE_ID && !s.has(name)) {
-          if (copy === undefined) {
-            copy = Object.assign({}, v);
-          }
-          delete copy[k];
-        }
-      }
-      return copy ?? v;
-    });
-  }, [formState, formSetState]);
-
   const add = useCallback(() => {
     formSetState((v) => {
       const next = Object.assign({}, v);
@@ -300,11 +281,12 @@ const JsonnetPlayground: FC = () => {
       controller.abort();
     };
   }, [unmounted]);
-  const prevCode = useRef('');
 
-  const lastShare = useRef<AbortController | undefined>();
   const route = useRoute();
   const routeNav = route.navigate;
+
+  const lastShare = useRef<AbortController | undefined>();
+  const prevCode = useRef('');
   const share = useCallback(() => {
     if (isNonNil(lastShare.current)) {
       lastShare.current.abort();
@@ -346,7 +328,7 @@ const JsonnetPlayground: FC = () => {
       prevCode.current = digest;
       routeNav(`#${params.toString()}`, true);
     })();
-  }, [lastShare, formState, unmounted, routeNav]);
+  }, [lastShare, unmounted, formState, prevCode, routeNav]);
 
   const handleReset = useCallback(() => {
     routeNav('', true);
@@ -403,9 +385,9 @@ const JsonnetPlayground: FC = () => {
     };
   }, [prevCode, routerURL, formSetState]);
 
-  const [jsonnetMod, setJsonnetMod] = useState<WebAssembly.Module | undefined>(
-    undefined,
-  );
+  const [jsonnetMod, setJsonnetMod] = useState<
+    WebAssembly.Module | undefined
+  >();
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
@@ -429,13 +411,17 @@ const JsonnetPlayground: FC = () => {
 
   useEffect(() => {
     if (isNil(jsonnetMod)) {
-      setOutput(emptyOutput);
+      startTransition(() => {
+        setOutput(emptyOutput);
+      });
       return;
     }
 
     const controller = new AbortController();
     void (async () => {
-      setOutput((v) => ({stdout: v.stdout, stderr: 'Loading...'}));
+      startTransition(() => {
+        setOutput((v) => ({stdout: v.stdout, stderr: 'Loading...'}));
+      });
       await sleep(250, {signal: controller.signal});
       if (isSignalAborted(controller.signal)) {
         return;
@@ -447,13 +433,17 @@ const JsonnetPlayground: FC = () => {
         return;
       }
       if (isResErr(res)) {
-        setOutput({
-          stdout: '',
-          stderr: `Failed running wasm module: ${res.err.toString()}`,
+        startTransition(() => {
+          setOutput({
+            stdout: '',
+            stderr: JSON.stringify(res.err, undefined, '  '),
+          });
         });
         return;
       }
-      setOutput(res.value);
+      startTransition(() => {
+        setOutput(res.value);
+      });
     })();
     return () => {
       controller.abort();
