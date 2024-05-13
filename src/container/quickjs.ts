@@ -319,9 +319,15 @@ export const runQuickJS = async (
       const waitForPromise = async (
         v: QuickJSHandle,
       ): Promise<QuickJSHandle | undefined> => {
-        const promise = vm.resolvePromise(v);
-        vm.runtime.executePendingJobs();
-        const res = await promise;
+        const state = vm.getPromiseState(v);
+        if (state.type === 'fulfilled' && state.notAPromise === true) {
+          return v;
+        }
+        const res = await v.consume(async (v) => {
+          const promise = vm.resolvePromise(v);
+          vm.runtime.executePendingJobs();
+          return await promise;
+        });
         return unpackQuickJSResult(res);
       };
       const unpackQuickJSCall = async (
@@ -331,9 +337,7 @@ export const runQuickJS = async (
         if (isNil(value)) {
           return undefined;
         }
-        return await value.consume(async (v) => {
-          return await waitForPromise(v);
-        });
+        return await waitForPromise(value);
       };
 
       const modExports = await unpackQuickJSCall(
