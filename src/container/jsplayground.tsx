@@ -287,12 +287,12 @@ const JSPlayground: FC = () => {
       });
       // set code to avoid redecoding
       prevCode.current = digest;
-      routeNav(`#${params.toString()}`, true);
+      routeNav({hash: params.toString()}, {replace: true});
     })();
   }, [lastShare, unmounted, formState, prevCode, routeNav]);
 
   const handleReset = useCallback(() => {
-    routeNav('', true);
+    routeNav('', {replace: true});
   }, [routeNav]);
 
   const router = useRouter();
