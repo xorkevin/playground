@@ -21,7 +21,7 @@ import {
   TextClasses,
   useColorScheme,
 } from '@xorkevin/nuke/component/text';
-import {classNames, strToEnum} from '@xorkevin/nuke/computil';
+import {classNames, valToEnum} from '@xorkevin/nuke/computil';
 import {type Route, Routes} from '@xorkevin/nuke/router';
 
 import styles from './app.module.css';
@@ -50,7 +50,7 @@ const App: FC = () => {
   >(
     (e) => {
       setColorScheme(
-        strToEnum(ColorScheme, e.target.value) ?? ColorScheme.System,
+        valToEnum(ColorScheme, e.target.value) ?? ColorScheme.System,
       );
     },
     [setColorScheme],
